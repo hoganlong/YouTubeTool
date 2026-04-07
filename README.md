@@ -21,22 +21,58 @@ A WPF desktop app (.NET 10, Windows) for managing YouTube channel watchlists. Tr
 ## Setup Requirements
 
 ### 1. YouTube Data API Key (required for Refresh)
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a project → Enable **YouTube Data API v3**
-3. Create an **API Key** credential
-4. Paste it into **Settings** (⚙ Settings button, bottom-left)
 
-### 2. OAuth Credentials (required for Sync Watch History button — currently non-functional, see Known Issues)
+The Refresh button fetches new videos from YouTube. To use it, you need a free YouTube Data API key from Google. You won't be charged — the free quota is more than enough for personal use.
+
+**Step 1 — Create a Google Cloud project**
+1. Go to [console.cloud.google.com](https://console.cloud.google.com/)
+2. Sign in with any Google account
+3. Click the project dropdown at the top of the page (it may say "Select a project")
+4. Click **New Project**
+5. Give it any name (e.g. `YouTubeTool`) and click **Create**
+6. Make sure your new project is selected in the dropdown before continuing
+
+**Step 2 — Enable the YouTube Data API**
+1. In the left sidebar, click **APIs & Services** → **Library**
+2. Search for `YouTube Data API v3`
+3. Click the result, then click **Enable**
+
+**Step 3 — Create an API Key**
+1. In the left sidebar, click **APIs & Services** → **Credentials**
+2. Click **+ Create Credentials** at the top
+3. Choose **API key**
+4. Google will show you your new API key — copy it
+
+**Step 4 — Enter the key in YouTubeTool**
+1. Open YouTubeTool
+2. Click the **⚙ Settings** button in the bottom-left
+3. Paste your API key into the **YouTube API Key** field
+4. Click **Save**
+
+You're done. Click **↻ Refresh** on any list to start fetching videos.
+
+---
+
+### 2. Google Takeout (recommended for marking watched videos)
+
+If you've been watching YouTube for a while, importing your watch history lets the app automatically mark videos you've already seen.
+
+1. Go to [takeout.google.com](https://takeout.google.com/)
+2. Click **Deselect all**, then scroll down and check only **YouTube and YouTube Music**
+3. Click the **All YouTube data included** button and uncheck everything except **history**
+4. Click **Next step** → **Create export**
+5. Download the zip when it's ready and extract it
+6. Find the file `watch-history.json` (usually inside `Takeout/YouTube and YouTube Music/history/`)
+7. In YouTubeTool, click **📂 Import Takeout** and select that file
+
+The app will mark any videos it already knows about as Watched, and remember all imported IDs so future channel refreshes also auto-mark them.
+
+---
+
+### 3. OAuth Credentials (optional — for Sync Watch History)
 1. In Google Cloud Console → Credentials → Create **OAuth 2.0 Client ID** (Desktop app)
 2. Under OAuth Consent Screen → Add your Google account email as a **Test User** (must be lowercase)
 3. Paste Client ID and Client Secret into Settings
-
-### 3. Google Takeout (recommended for marking watched videos)
-1. Go to [Google Takeout](https://takeout.google.com/)
-2. Select only **YouTube and YouTube Music** → **watch-history.json**
-3. Download and extract
-4. In the app: click **📂 Import Takeout** and select `watch-history.json`
-5. The app saves all imported video IDs to the DB — new channels added later will automatically show already-watched videos as Watched
 
 ---
 
