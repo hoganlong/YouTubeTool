@@ -87,6 +87,8 @@ public class MainViewModel : BaseViewModel
     public ICommand MarkAllWatchedCommand { get; }
     public ICommand SyncWatchHistoryCommand { get; }
     public ICommand ImportTakeoutCommand { get; }
+    public ICommand ExportListCommand { get; }
+    public ICommand ImportListCommand { get; }
     public ICommand OpenSettingsCommand { get; }
 
     public MainViewModel(DatabaseService db, YouTubeService yt, SettingsService settings, GoogleAuthService auth, TakeoutImportService takeout, ChromeCookieService cookies, WebView2CookieService webView2Cookies)
@@ -107,6 +109,8 @@ public class MainViewModel : BaseViewModel
         MarkAllWatchedCommand = new AsyncRelayCommand(MarkAllWatchedAsync, () => SelectedList != null && Videos.Any(v => v.Status == VideoStatus.Unwatched));
         SyncWatchHistoryCommand = new AsyncRelayCommand(SyncWatchHistoryAsync, () => !IsBusy);
         ImportTakeoutCommand = new AsyncRelayCommand(ImportTakeoutAsync, () => !IsBusy);
+        ExportListCommand = new AsyncRelayCommand(ExportListAsync, () => SelectedList != null && !IsBusy);
+        ImportListCommand = new AsyncRelayCommand(ImportListAsync, () => !IsBusy);
         OpenSettingsCommand = new RelayCommand(OpenSettings);
     }
 
@@ -423,6 +427,107 @@ public class MainViewModel : BaseViewModel
         catch (Exception ex)
         {
             StatusMessage = $"Sync failed: {ex.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private async Task ExportListAsync()
+    {
+        if (SelectedList == null) return;
+
+        var channels = await _db.GetChannelsForListAsync(SelectedList.Id);
+
+        var dialog = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "Export List",
+            Filter = "YouTubeTool List (*_YTT.xml)|*_YTT.xml|XML files (*.xml)|*.xml",
+            FileName = $"{SelectedList.Name}_YTT.xml"
+        };
+
+        if (dialog.ShowDialog() != true) return;
+
+        var doc = new System.Xml.Linq.XDocument(
+            new System.Xml.Linq.XDeclaration("1.0", "utf-8", null),
+            new System.Xml.Linq.XElement("YouTubeToolList",
+                new System.Xml.Linq.XAttribute("name", SelectedList.Name),
+                channels.Select(c => new System.Xml.Linq.XElement("Channel",
+                    new System.Xml.Linq.XAttribute("name", c.Name),
+                    new System.Xml.Linq.XAttribute("youtubeChannelId", c.YouTubeChannelId),
+                    c.ThumbnailUrl != null ? new System.Xml.Linq.XAttribute("thumbnailUrl", c.ThumbnailUrl) : null
+                ))
+            )
+        );
+
+        await Task.Run(() => doc.Save(dialog.FileName));
+        StatusMessage = $"Exported {channels.Count} channel(s) to {System.IO.Path.GetFileName(dialog.FileName)}.";
+    }
+
+    private async Task ImportListAsync()
+    {
+        var openDialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Import List",
+            Filter = "YouTubeTool List (*_YTT.xml)|*_YTT.xml|XML files (*.xml)|*.xml"
+        };
+
+        if (openDialog.ShowDialog() != true) return;
+
+        System.Xml.Linq.XDocument doc;
+        try
+        {
+            doc = System.Xml.Linq.XDocument.Load(openDialog.FileName);
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Import failed: {ex.Message}";
+            return;
+        }
+
+        var root = doc.Root;
+        if (root?.Name.LocalName != "YouTubeToolList")
+        {
+            StatusMessage = "Import failed: not a valid YouTubeTool list file.";
+            return;
+        }
+
+        var xmlListName = root.Attribute("name")?.Value ?? "Imported List";
+        var channels = root.Elements("Channel")
+            .Select(e => new ChannelInfo(
+                e.Attribute("youtubeChannelId")?.Value ?? "",
+                e.Attribute("name")?.Value ?? "",
+                e.Attribute("thumbnailUrl")?.Value))
+            .Where(c => !string.IsNullOrWhiteSpace(c.YouTubeChannelId))
+            .ToList();
+
+        if (channels.Count == 0)
+        {
+            StatusMessage = "Import failed: no valid channels found in the file.";
+            return;
+        }
+
+        var nameDialog = new Views.InputDialog("Enter name for the new list:", "Import List", xmlListName);
+        if (nameDialog.ShowDialog() != true || string.IsNullOrWhiteSpace(nameDialog.Result)) return;
+
+        IsBusy = true;
+        StatusMessage = $"Importing {channels.Count} channel(s)...";
+        try
+        {
+            var list = await _db.AddListAsync(nameDialog.Result.Trim());
+            var listItem = new ChannelListItem(list);
+            Lists.Add(listItem);
+
+            foreach (var info in channels)
+                await _db.AddChannelToListAsync(list.Id, info);
+
+            StatusMessage = $"Imported \"{list.Name}\" with {channels.Count} channel(s).";
+            SelectedList = listItem;
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Import failed: {ex.Message}";
         }
         finally
         {

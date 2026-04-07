@@ -7,11 +7,13 @@ public partial class InputDialog : Window
 {
     public string Result { get; private set; } = string.Empty;
 
-    public InputDialog(string prompt, string title = "Input")
+    public InputDialog(string prompt, string title = "Input", string defaultValue = "")
     {
         InitializeComponent();
         Title = title;
         PromptText.Text = prompt;
+        InputBox.Text = defaultValue;
+        InputBox.SelectAll();
         InputBox.Focus();
     }
 

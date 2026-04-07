@@ -191,6 +191,15 @@
                         <Button Content="⚙ Settings" Padding="6,4"
                                 Command="{Binding OpenSettingsCommand}"
                                 Style="{StaticResource ActionButton}"/>
+                        <Button Content="📂 Import Takeout" Margin="0,4,0,0" Padding="6,4"
+                                Command="{Binding ImportTakeoutCommand}"
+                                Style="{StaticResource ActionButton}"/>
+                        <Button Content="📤 Export List" Margin="0,4,0,0" Padding="6,4"
+                                Command="{Binding ExportListCommand}"
+                                Style="{StaticResource ActionButton}"/>
+                        <Button Content="📥 Import List" Margin="0,4,0,0" Padding="6,4"
+                                Command="{Binding ImportListCommand}"
+                                Style="{StaticResource ActionButton}"/>
                     </StackPanel>
                 </Border>
 
@@ -246,6 +255,9 @@
 
                 <Border DockPanel.Dock="Bottom" Background="#252526" Padding="6">
                     <StackPanel>
+                        <Button Content="Mark All Watched" Margin="0,0,0,4" Padding="6,4"
+                                Command="{Binding MarkAllWatchedCommand}"
+                                Style="{StaticResource WatchedButton}"/>
                         <Grid Margin="0,0,0,4">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
@@ -324,15 +336,7 @@
                                 Command="{Binding SyncWatchHistoryCommand}"
                                 Style="{StaticResource ActionButton}"
                                 Padding="10,3" Margin="6,0,0,0"/>
-                        <Button DockPanel.Dock="Right" Content="📂 Import Takeout"
-                                Command="{Binding ImportTakeoutCommand}"
-                                Style="{StaticResource ActionButton}"
-                                Padding="10,3" Margin="6,0,0,0"/>
-                        <Button DockPanel.Dock="Right" Content="Mark All Watched"
-                                Command="{Binding MarkAllWatchedCommand}"
-                                Style="{StaticResource WatchedButton}"
-                                Padding="10,3" Margin="6,0,0,0"/>
-                        <CheckBox DockPanel.Dock="Right" Content="Show Watched"
+<CheckBox DockPanel.Dock="Right" Content="Show Watched"
                                   IsChecked="{Binding ShowWatched}"
                                   VerticalAlignment="Center"
                                   Foreground="#AAA" Margin="6,0,0,0"/>
