@@ -219,9 +219,22 @@ public class YouTubeService
                         .GetProperty("datasyncId")
                         .GetString() ?? "unknown";
                     var allCookieNames = string.Join(", ", cookies.Keys.OrderBy(k => k));
+                    // Also copy ytcfg_dump.json into the log folder for diagnosis
+                    var webview2Path = System.IO.Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                        "YouTubeTool", "webview2");
+                    var ytcfgDump = "";
+                    try
+                    {
+                        var dumpPath = System.IO.Path.Combine(webview2Path, "ytcfg_dump.json");
+                        if (System.IO.File.Exists(dumpPath))
+                            ytcfgDump = System.IO.File.ReadAllText(dumpPath);
+                    }
+                    catch { }
                     File.AppendAllText(Path.Combine(logDir, "yt_subscriptions_summary.txt"),
                         $"--- Run started: datasyncId={datasyncId}, onBehalfOfUser={onBehalfOfUser ?? "(none)"} ---\n" +
-                        $"    Cookies present: {allCookieNames}\n");
+                        $"    Cookies present: {allCookieNames}\n" +
+                        $"    ytcfg at login: {(string.IsNullOrEmpty(ytcfgDump) ? "(no dump found)" : ytcfgDump)}\n");
                 }
                 catch { }
             }

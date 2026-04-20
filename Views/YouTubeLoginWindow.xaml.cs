@@ -30,15 +30,43 @@ public partial class YouTubeLoginWindow : Window
 
         if (cookies.Any(c => c.Name == "SAPISID"))
         {
-            // Read the active channel context from YouTube's JS config.
-            // onBehalfOfUser is set when the user has switched to a brand account (e.g. mitelit).
-            // It must be included in InnerTube requests to fetch that channel's subscriptions.
+            // Dump ytcfg diagnostics and extract the active channel ID.
             try
             {
-                var result = await WebView.CoreWebView2.ExecuteScriptAsync(
-                    "(function(){ try { return window.ytcfg.get('INNERTUBE_CONTEXT')?.user?.onBehalfOfUser ?? ''; } catch(e){ return ''; } })()");
-                // ExecuteScriptAsync returns a JSON-encoded string — deserialise it
-                var onBehalfOf = System.Text.Json.JsonSerializer.Deserialize<string>(result) ?? "";
+                var currentUrl = WebView.CoreWebView2.Source;
+
+                // Collect several candidate keys for the active channel
+                var scriptResult = await WebView.CoreWebView2.ExecuteScriptAsync(@"
+(function(){
+    try {
+        var ctx = window.ytcfg ? window.ytcfg.get('INNERTUBE_CONTEXT') : null;
+        return JSON.stringify({
+            url: location.href,
+            onBehalfOfUser: ctx?.user?.onBehalfOfUser ?? '',
+            delegatedSessionId: window.ytcfg ? (window.ytcfg.get('DELEGATED_SESSION_ID') ?? '') : '',
+            datasyncId: window.ytcfg ? (window.ytcfg.get('DATASYNC_ID') ?? '') : '',
+            pageId: window.ytcfg ? (window.ytcfg.get('PAGE_CL') ?? '') : '',
+            hasYtcfg: !!window.ytcfg
+        });
+    } catch(e) { return JSON.stringify({error: e.toString()}); }
+})()");
+
+                // scriptResult is a JSON-encoded string — unwrap the outer quotes
+                var inner = System.Text.Json.JsonSerializer.Deserialize<string>(scriptResult) ?? "{}";
+
+                // Save full diagnostic dump
+                File.WriteAllText(Path.Combine(_userDataPath, "ytcfg_dump.json"), inner);
+
+                // Extract onBehalfOfUser from the dump
+                using var doc = System.Text.Json.JsonDocument.Parse(inner);
+                var onBehalfOf = "";
+                if (doc.RootElement.TryGetProperty("onBehalfOfUser", out var obu))
+                    onBehalfOf = obu.GetString() ?? "";
+                // Fallback: try delegatedSessionId
+                if (string.IsNullOrEmpty(onBehalfOf) &&
+                    doc.RootElement.TryGetProperty("delegatedSessionId", out var dsi))
+                    onBehalfOf = dsi.GetString() ?? "";
+
                 File.WriteAllText(Path.Combine(_userDataPath, "on_behalf_of.txt"), onBehalfOf);
             }
             catch { }
