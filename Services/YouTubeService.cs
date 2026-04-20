@@ -349,7 +349,10 @@ public class YouTubeService
     {
         try
         {
-            var listItems = chip
+            // chips[] items are wrapped: { "chipViewModel": { "tapCommand": ... } }
+            if (!chip.TryGetProperty("chipViewModel", out var chipVm)) return null;
+
+            var listItems = chipVm
                 .GetProperty("tapCommand")
                 .GetProperty("innertubeCommand")
                 .GetProperty("showSheetCommand")
@@ -364,7 +367,10 @@ public class YouTubeService
             {
                 try
                 {
-                    var commands = listItem
+                    // listItems[] items are wrapped: { "listItemViewModel": { "rendererContext": ... } }
+                    if (!listItem.TryGetProperty("listItemViewModel", out var listItemVm)) continue;
+
+                    var commands = listItemVm
                         .GetProperty("rendererContext")
                         .GetProperty("commandContext")
                         .GetProperty("onTap")
