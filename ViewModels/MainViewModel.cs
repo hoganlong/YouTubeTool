@@ -441,8 +441,7 @@ public class MainViewModel : BaseViewModel
         StatusMessage = "Reading YouTube session...";
         try
         {
-            var owner = Application.Current.MainWindow;
-            var browserCookies = await _webView2Cookies.GetYouTubeCookiesAsync(owner);
+            var browserCookies = await GetYouTubeCookiesAsync();
             if (browserCookies.Count == 0)
             {
                 StatusMessage = "YouTube sign-in cancelled.";
@@ -640,8 +639,7 @@ public class MainViewModel : BaseViewModel
         StatusMessage = "Reading YouTube session...";
         try
         {
-            var owner = Application.Current.MainWindow;
-            var browserCookies = await _webView2Cookies.GetYouTubeCookiesAsync(owner);
+            var browserCookies = await GetYouTubeCookiesAsync();
             if (browserCookies.Count == 0)
             {
                 StatusMessage = "YouTube sign-in cancelled.";
@@ -728,6 +726,22 @@ public class MainViewModel : BaseViewModel
             Owner = Application.Current.MainWindow
         };
         win.Show();
+    }
+
+    // Try Chrome/Edge/Brave cookies first (uses the browser's active session).
+    // Falls back to the WebView2 sign-in window if no valid browser session is found.
+    private async Task<Dictionary<string, string>> GetYouTubeCookiesAsync()
+    {
+        try
+        {
+            var chromeCookies = await _cookies.GetYouTubeCookiesAsync();
+            if (chromeCookies.ContainsKey("SAPISID"))
+                return chromeCookies;
+        }
+        catch { /* Chrome locked or unavailable — fall through */ }
+
+        var owner = Application.Current.MainWindow;
+        return await _webView2Cookies.GetYouTubeCookiesAsync(owner);
     }
 
     private static string GetFullMessage(Exception ex)
