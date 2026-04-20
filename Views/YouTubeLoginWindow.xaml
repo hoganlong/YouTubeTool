@@ -11,13 +11,19 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0" Padding="12,10"
-                   Text="Sign into YouTube below. When done, click the button."
-                   Background="#1E1E1E" Foreground="White" FontSize="13"/>
+        <StackPanel Grid.Row="0" Background="#1E1E1E">
+            <TextBlock Foreground="White" FontSize="13" FontWeight="SemiBold"
+                       Margin="12,10,12,2"
+                       Text="Step 1: Sign into YouTube below."/>
+            <TextBlock Foreground="#BBBBBB" FontSize="12" Margin="12,4,12,2" TextWrapping="Wrap"
+                       Text="Step 2: If you have multiple YouTube channels, click your profile picture (top-right) and switch to the correct channel."/>
+            <TextBlock Foreground="#BBBBBB" FontSize="12" Margin="12,4,12,10"
+                       Text="Step 3: Click 'Done' below."/>
+        </StackPanel>
 
         <wv2:WebView2 x:Name="WebView" Grid.Row="1"/>
 
-        <Button Grid.Row="2" Content="Done — I'm logged in"
+        <Button Grid.Row="2" Content="Done — I'm signed in to the right channel"
                 Margin="12" Padding="0,10"
                 FontSize="14" FontWeight="SemiBold"
                 Background="#007ACC" Foreground="White" BorderThickness="0"

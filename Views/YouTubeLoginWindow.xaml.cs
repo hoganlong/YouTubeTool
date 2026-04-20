@@ -43,7 +43,8 @@ public partial class YouTubeLoginWindow : Window
                 $"Not signed in yet — SAPISID cookie not found.\n\n" +
                 $"Current page: {currentUrl}\n" +
                 $"YouTube cookies found: {cookieNames}\n\n" +
-                "Please sign into YouTube in the browser above, then click Done.",
+                "Please sign into YouTube in the browser above.\n" +
+                "If you want to use a specific YouTube channel, click your profile picture (top-right on YouTube) and switch to that channel before clicking Done.",
                 "Not Signed In", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }

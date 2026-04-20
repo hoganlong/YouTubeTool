@@ -203,7 +203,7 @@ public class YouTubeService
 
             using var doc = System.Text.Json.JsonDocument.Parse(json);
 
-            // Log which account is signed in (datasyncId) on the first page
+            // Log which account is active on the first page
             if (pageNum == 0)
             {
                 try
@@ -213,8 +213,11 @@ public class YouTubeService
                         .GetProperty("mainAppWebResponseContext")
                         .GetProperty("datasyncId")
                         .GetString() ?? "unknown";
+                    var hasDelegation = cookies.ContainsKey("DELEGATED_SESSION_ID");
+                    var allCookieNames = string.Join(", ", cookies.Keys.OrderBy(k => k));
                     File.AppendAllText(Path.Combine(logDir, "yt_subscriptions_summary.txt"),
-                        $"--- Run started, signed-in account datasyncId: {datasyncId} ---\n");
+                        $"--- Run started: datasyncId={datasyncId}, DELEGATED_SESSION_ID={hasDelegation} ---\n" +
+                        $"    Cookies present: {allCookieNames}\n");
                 }
                 catch { }
             }
