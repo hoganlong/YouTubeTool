@@ -11,6 +11,19 @@ public class WebView2CookieService
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "YouTubeTool", "webview2");
 
+    // Returns the YouTube channel ID to act as (brand account), or null for the primary account.
+    // Saved by the login window when the user switches channels before clicking Done.
+    public string? TryGetOnBehalfOfUser()
+    {
+        var path = Path.Combine(UserDataPath, "on_behalf_of.txt");
+        try
+        {
+            var v = File.Exists(path) ? File.ReadAllText(path).Trim() : null;
+            return string.IsNullOrEmpty(v) ? null : v;
+        }
+        catch { return null; }
+    }
+
     public void SignOut()
     {
         if (!Directory.Exists(UserDataPath)) return;
@@ -25,6 +38,9 @@ public class WebView2CookieService
             var defaultProfile = Path.Combine(UserDataPath, "Default");
             if (Directory.Exists(defaultProfile))
                 Directory.Delete(defaultProfile, recursive: true);
+            // Also clear the brand account context file
+            var onBehalfOfPath = Path.Combine(UserDataPath, "on_behalf_of.txt");
+            try { File.Delete(onBehalfOfPath); } catch { }
         }
     }
 

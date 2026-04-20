@@ -451,7 +451,8 @@ public class MainViewModel : BaseViewModel
             var knownIds = await _db.GetAllWatchHistoryIdsAsync();
             var progress = new Progress<string>(msg => StatusMessage = msg);
 
-            var allFetchedIds = await _yt.FetchWatchHistoryViaInnerTubeAsync(browserCookies, progress);
+            var onBehalfOf = _webView2Cookies.TryGetOnBehalfOfUser();
+            var allFetchedIds = await _yt.FetchWatchHistoryViaInnerTubeAsync(browserCookies, progress, onBehalfOf);
 
             if (allFetchedIds.Count == 0)
             {
@@ -647,7 +648,8 @@ public class MainViewModel : BaseViewModel
             }
 
             var progress = new Progress<string>(msg => StatusMessage = msg);
-            var channels = await _yt.FetchSubscribedChannelsViaInnerTubeAsync(browserCookies, progress);
+            var onBehalfOf = _webView2Cookies.TryGetOnBehalfOfUser();
+            var channels = await _yt.FetchSubscribedChannelsViaInnerTubeAsync(browserCookies, progress, onBehalfOf);
 
             if (channels.Count == 0)
             {

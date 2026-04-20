@@ -160,7 +160,8 @@ public class YouTubeService
     // Fetch unique subscribed channels via YouTube's InnerTube API using browser session cookies.
     public async Task<List<ChannelInfo>> FetchSubscribedChannelsViaInnerTubeAsync(
         Dictionary<string, string> cookies,
-        IProgress<string>? progress = null)
+        IProgress<string>? progress = null,
+        string? onBehalfOfUser = null)
     {
         if (!cookies.TryGetValue("SAPISID", out var sapisid))
             throw new Exception("YouTube session not found. Make sure you are signed in to YouTube in the browser.");
@@ -174,7 +175,11 @@ public class YouTubeService
         http.DefaultRequestHeaders.Add("User-Agent",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
 
-        const string context = """{"client":{"clientName":"WEB","clientVersion":"2.20240101.00.00","hl":"en","gl":"US"}}""";
+        // Include onBehalfOfUser when acting as a brand account (secondary channel)
+        var userContext = onBehalfOfUser != null
+            ? $$$"""{"onBehalfOfUser":"{{{onBehalfOfUser}}}"}"""
+            : "{}";
+        var context = $$$"""{"client":{"clientName":"WEB","clientVersion":"2.20240101.00.00","hl":"en","gl":"US"},"user":{{{userContext}}}}""";
         var seen = new Dictionary<string, ChannelInfo>(StringComparer.Ordinal);
         string? continuation = null;
         int pageNum = 0;
@@ -213,10 +218,9 @@ public class YouTubeService
                         .GetProperty("mainAppWebResponseContext")
                         .GetProperty("datasyncId")
                         .GetString() ?? "unknown";
-                    var hasDelegation = cookies.ContainsKey("DELEGATED_SESSION_ID");
                     var allCookieNames = string.Join(", ", cookies.Keys.OrderBy(k => k));
                     File.AppendAllText(Path.Combine(logDir, "yt_subscriptions_summary.txt"),
-                        $"--- Run started: datasyncId={datasyncId}, DELEGATED_SESSION_ID={hasDelegation} ---\n" +
+                        $"--- Run started: datasyncId={datasyncId}, onBehalfOfUser={onBehalfOfUser ?? "(none)"} ---\n" +
                         $"    Cookies present: {allCookieNames}\n");
                 }
                 catch { }
@@ -420,10 +424,11 @@ public class YouTubeService
     public async Task<List<string>> FetchWatchHistoryViaInnerTubeAsync(
         Dictionary<string, string> cookies,
         IProgress<string>? progress = null,
+        string? onBehalfOfUser = null,
         int maxPages = 5)
     {
         if (!cookies.TryGetValue("SAPISID", out var sapisid))
-            throw new Exception("YouTube session not found in Chrome/Edge. Make sure you are logged into YouTube in your browser.");
+            throw new Exception("YouTube session not found. Make sure you are signed in to YouTube.");
 
         var cookieHeader = string.Join("; ", cookies.Select(kv => $"{kv.Key}={kv.Value}"));
 
@@ -435,7 +440,10 @@ public class YouTubeService
         http.DefaultRequestHeaders.Add("User-Agent",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
 
-        const string context = """{"client":{"clientName":"WEB","clientVersion":"2.20240101.00.00","hl":"en","gl":"US"}}""";
+        var userContext = onBehalfOfUser != null
+            ? $$$"""{"onBehalfOfUser":"{{{onBehalfOfUser}}}"}"""
+            : "{}";
+        var context = $$$"""{"client":{"clientName":"WEB","clientVersion":"2.20240101.00.00","hl":"en","gl":"US"},"user":{{{userContext}}}}""";
         var allIds = new List<string>();
         string? continuation = null;
 

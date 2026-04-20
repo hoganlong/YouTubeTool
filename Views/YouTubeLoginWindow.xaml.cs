@@ -30,6 +30,19 @@ public partial class YouTubeLoginWindow : Window
 
         if (cookies.Any(c => c.Name == "SAPISID"))
         {
+            // Read the active channel context from YouTube's JS config.
+            // onBehalfOfUser is set when the user has switched to a brand account (e.g. mitelit).
+            // It must be included in InnerTube requests to fetch that channel's subscriptions.
+            try
+            {
+                var result = await WebView.CoreWebView2.ExecuteScriptAsync(
+                    "(function(){ try { return window.ytcfg.get('INNERTUBE_CONTEXT')?.user?.onBehalfOfUser ?? ''; } catch(e){ return ''; } })()");
+                // ExecuteScriptAsync returns a JSON-encoded string — deserialise it
+                var onBehalfOf = System.Text.Json.JsonSerializer.Deserialize<string>(result) ?? "";
+                File.WriteAllText(Path.Combine(_userDataPath, "on_behalf_of.txt"), onBehalfOf);
+            }
+            catch { }
+
             DialogResult = true;
         }
         else
