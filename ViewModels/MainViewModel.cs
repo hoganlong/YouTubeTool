@@ -736,10 +736,14 @@ public class MainViewModel : BaseViewModel
         {
             var chromeCookies = await _cookies.GetYouTubeCookiesAsync();
             if (chromeCookies.ContainsKey("SAPISID"))
+            {
+                StatusMessage = "Using active browser session.";
                 return chromeCookies;
+            }
         }
         catch { /* Chrome locked or unavailable — fall through */ }
 
+        StatusMessage = "Browser session unavailable — please sign in to YouTube in the window that opens.";
         var owner = Application.Current.MainWindow;
         return await _webView2Cookies.GetYouTubeCookiesAsync(owner);
     }

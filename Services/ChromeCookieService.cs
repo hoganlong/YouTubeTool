@@ -68,7 +68,21 @@ public class ChromeCookieService
             cookiesDb = Path.Combine(userDataPath, "Default", "Cookies");
         log.AppendLine($"  Cookies DB: {cookiesDb} — exists={File.Exists(cookiesDb)}");
 
-        return await ReadYouTubeCookiesAsync(cookiesDb, aesKey, log);
+        // Copy to a temp file first — Chrome holds an exclusive SQLite lock on the original.
+        // FileShare.ReadWrite allows us to read past it at the OS level.
+        var tempDb = Path.GetTempFileName();
+        try
+        {
+            using (var src = new FileStream(cookiesDb, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            using (var dst = new FileStream(tempDb, FileMode.Create, FileAccess.Write, FileShare.None))
+                await src.CopyToAsync(dst);
+
+            return await ReadYouTubeCookiesAsync(tempDb, aesKey, log);
+        }
+        finally
+        {
+            try { File.Delete(tempDb); } catch { }
+        }
     }
 
     private static Task<Dictionary<string, string>> ReadYouTubeCookiesAsync(

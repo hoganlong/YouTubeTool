@@ -20,7 +20,7 @@ public partial class YouTubeLoginWindow : Window
         Directory.CreateDirectory(_userDataPath);
         var env = await CoreWebView2Environment.CreateAsync(null, _userDataPath);
         await WebView.EnsureCoreWebView2Async(env);
-        WebView.CoreWebView2.Navigate("https://www.youtube.com");
+        WebView.CoreWebView2.Navigate("https://accounts.google.com/AccountChooser?continue=https://www.youtube.com");
     }
 
     private async void Done_Click(object sender, RoutedEventArgs e)

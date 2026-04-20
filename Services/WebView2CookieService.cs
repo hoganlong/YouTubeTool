@@ -13,8 +13,19 @@ public class WebView2CookieService
 
     public void SignOut()
     {
-        if (Directory.Exists(UserDataPath))
+        if (!Directory.Exists(UserDataPath)) return;
+        try
+        {
             Directory.Delete(UserDataPath, recursive: true);
+        }
+        catch (IOException)
+        {
+            // Some files (e.g. BrowsingTopicsSiteData) may be locked by WebView2 background
+            // processes. Deleting the Default profile folder is sufficient to clear the session.
+            var defaultProfile = Path.Combine(UserDataPath, "Default");
+            if (Directory.Exists(defaultProfile))
+                Directory.Delete(defaultProfile, recursive: true);
+        }
     }
 
     // Returns YouTube cookies from our persistent WebView2 session.
