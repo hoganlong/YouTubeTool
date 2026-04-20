@@ -16,11 +16,13 @@ public class SettingsViewModel : BaseViewModel
     private string _testResult = string.Empty;
     private string _signInStatus = string.Empty;
     private int _maxVideos = 50;
+    private double _uiScale = 1.0;
 
     public string ApiKey { get => _apiKey; set => SetProperty(ref _apiKey, value); }
     public string OAuthClientId { get => _oAuthClientId; set => SetProperty(ref _oAuthClientId, value); }
     public string OAuthClientSecret { get => _oAuthClientSecret; set => SetProperty(ref _oAuthClientSecret, value); }
     public int MaxVideos { get => _maxVideos; set => SetProperty(ref _maxVideos, value); }
+    public double UiScale { get => _uiScale; set => SetProperty(ref _uiScale, value); }
     public string TestResult { get => _testResult; set => SetProperty(ref _testResult, value); }
     public string SignInStatus { get => _signInStatus; set => SetProperty(ref _signInStatus, value); }
 
@@ -42,6 +44,7 @@ public class SettingsViewModel : BaseViewModel
         _oAuthClientId = settings.OAuthClientId;
         _oAuthClientSecret = settings.OAuthClientSecret;
         _maxVideos = settings.MaxVideosPerChannel;
+        _uiScale = settings.UiScale;
 
         UpdateSignInStatus();
 
@@ -65,7 +68,8 @@ public class SettingsViewModel : BaseViewModel
             YouTubeApiKey = ApiKey,
             OAuthClientId = OAuthClientId,
             OAuthClientSecret = OAuthClientSecret,
-            MaxVideosPerChannel = MaxVideos
+            MaxVideosPerChannel = MaxVideos,
+            UiScale = UiScale
         });
         CloseRequested?.Invoke();
     }

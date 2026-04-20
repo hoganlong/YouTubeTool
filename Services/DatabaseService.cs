@@ -55,14 +55,15 @@ public class DatabaseService(IDbContextFactory<AppDbContext> factory)
             .ToListAsync();
     }
 
-    public async Task<List<Video>> GetUnwatchedVideosForChannelAsync(int channelId)
+    public async Task<List<Video>> GetUnwatchedVideosForChannelAsync(int channelId, VideoSortOrder sortOrder = VideoSortOrder.OldestFirst)
     {
         await using var db = await factory.CreateDbContextAsync();
-        return await db.Videos
+        var query = db.Videos
             .Where(v => v.ChannelId == channelId && v.Status == VideoStatus.Unwatched)
-            .Include(v => v.Channel)
-            .OrderBy(v => v.PublishedAt)
-            .ToListAsync();
+            .Include(v => v.Channel);
+        return sortOrder == VideoSortOrder.NewestFirst
+            ? await query.OrderByDescending(v => v.PublishedAt).ToListAsync()
+            : await query.OrderBy(v => v.PublishedAt).ToListAsync();
     }
 
     public async Task<ChannelList> AddListAsync(string name)
@@ -172,14 +173,15 @@ public class DatabaseService(IDbContextFactory<AppDbContext> factory)
             .ToListAsync();
     }
 
-    public async Task<List<Video>> GetAllVideosForChannelAsync(int channelId)
+    public async Task<List<Video>> GetAllVideosForChannelAsync(int channelId, VideoSortOrder sortOrder = VideoSortOrder.OldestFirst)
     {
         await using var db = await factory.CreateDbContextAsync();
-        return await db.Videos
+        var query = db.Videos
             .Where(v => v.ChannelId == channelId)
-            .Include(v => v.Channel)
-            .OrderBy(v => v.PublishedAt)
-            .ToListAsync();
+            .Include(v => v.Channel);
+        return sortOrder == VideoSortOrder.NewestFirst
+            ? await query.OrderByDescending(v => v.PublishedAt).ToListAsync()
+            : await query.OrderBy(v => v.PublishedAt).ToListAsync();
     }
 
     public async Task MarkAllWatchedForListAsync(int listId)
@@ -369,5 +371,13 @@ public class DatabaseService(IDbContextFactory<AppDbContext> factory)
         await db.Channels
             .Where(c => c.Id == channelId)
             .ExecuteUpdateAsync(s => s.SetProperty(c => c.LastFetchedAt, DateTime.UtcNow));
+    }
+
+    public async Task UpdateChannelSortOrderAsync(int channelId, VideoSortOrder sortOrder)
+    {
+        await using var db = await factory.CreateDbContextAsync();
+        await db.Channels
+            .Where(c => c.Id == channelId)
+            .ExecuteUpdateAsync(s => s.SetProperty(c => c.VideoSortOrder, sortOrder));
     }
 }

@@ -5,7 +5,7 @@
         WindowStartupLocation="CenterOwner"
         ResizeMode="CanResize"
         Background="#1E1E1E">
-    <DockPanel Margin="10">
+    <DockPanel x:Name="RootPanel" Margin="10">
         <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal"
                     HorizontalAlignment="Right" Margin="0,8,0,0">
             <Button Content="Copy Selected" Width="110" Padding="6,4" Margin="0,0,8,0"
@@ -15,7 +15,7 @@
                     Click="CopyAll_Click"
                     Background="#0E639C" Foreground="White" BorderThickness="0" Cursor="Hand"/>
             <Button Content="Close" Width="70" Padding="6,4"
-                    IsCancel="True"
+                    Click="Close_Click"
                     Background="#444" Foreground="White" BorderThickness="0" Cursor="Hand"/>
         </StackPanel>
         <ListBox x:Name="MessageList"

@@ -70,6 +70,24 @@
             <TextBox Width="60" Text="{Binding MaxVideos}"/>
         </StackPanel>
 
+        <!-- UI Scale -->
+        <TextBlock Text="UI Scale" FontWeight="Bold" Margin="0,0,0,4"/>
+        <Grid Margin="0,0,0,16">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="44"/>
+            </Grid.ColumnDefinitions>
+            <Slider Grid.Column="0"
+                    Minimum="0.7" Maximum="1.5"
+                    SmallChange="0.05" LargeChange="0.1"
+                    TickFrequency="0.05" IsSnapToTickEnabled="True"
+                    VerticalAlignment="Center"
+                    Value="{Binding UiScale}"/>
+            <TextBlock Grid.Column="1"
+                       Text="{Binding UiScale, StringFormat='{}{0:P0}'}"
+                       HorizontalAlignment="Right" VerticalAlignment="Center"/>
+        </Grid>
+
         <Button Content="Save" HorizontalAlignment="Right"
                 Width="80" Command="{Binding SaveCommand}"/>
 

@@ -6,4 +6,5 @@ public class AppSettings
     public int MaxVideosPerChannel { get; set; } = 50;
     public string OAuthClientId { get; set; } = string.Empty;
     public string OAuthClientSecret { get; set; } = string.Empty;
+    public double UiScale { get; set; } = 1.0;
 }

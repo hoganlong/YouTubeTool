@@ -20,10 +20,11 @@ public class ChannelItem : BaseViewModel
     public int Id { get; }
     public string Name { get; }
     public string YouTubeChannelId { get; }
+    public VideoSortOrder SortOrder { get; set; }
     public int UnwatchedCount { get => _unwatchedCount; set => SetProperty(ref _unwatchedCount, value); }
     public string DisplayName => UnwatchedCount > 0 ? $"{Name} ({UnwatchedCount})" : Name;
 
-    public ChannelItem(Channel channel) { Id = channel.Id; Name = channel.Name; YouTubeChannelId = channel.YouTubeChannelId; }
+    public ChannelItem(Channel channel) { Id = channel.Id; Name = channel.Name; YouTubeChannelId = channel.YouTubeChannelId; SortOrder = channel.VideoSortOrder; }
 
     public void RefreshDisplayName() => OnPropertyChanged(nameof(DisplayName));
 }
@@ -44,6 +45,7 @@ public class MainViewModel : BaseViewModel
     private bool _showWatched;
     private string _statusMessage = "Ready";
     private string _addChannelText = string.Empty;
+    private double _uiScale = 1.0;
     private readonly List<string> _messageHistory = [];
 
     public ObservableCollection<ChannelListItem> Lists { get; } = [];
@@ -66,7 +68,26 @@ public class MainViewModel : BaseViewModel
         set
         {
             if (SetProperty(ref _selectedChannel, value))
+            {
+                OnPropertyChanged(nameof(ChannelSortOrder));
+                OnPropertyChanged(nameof(IsChannelSelected));
                 _ = LoadVideosAsync();
+            }
+        }
+    }
+
+    public bool IsChannelSelected => _selectedChannel != null;
+
+    public VideoSortOrder ChannelSortOrder
+    {
+        get => _selectedChannel?.SortOrder ?? VideoSortOrder.OldestFirst;
+        set
+        {
+            if (_selectedChannel == null || _selectedChannel.SortOrder == value) return;
+            _selectedChannel.SortOrder = value;
+            OnPropertyChanged();
+            _ = _db.UpdateChannelSortOrderAsync(_selectedChannel.Id, value);
+            _ = LoadVideosAsync();
         }
     }
 
@@ -91,6 +112,7 @@ public class MainViewModel : BaseViewModel
         }
     }
     public string AddChannelText { get => _addChannelText; set => SetProperty(ref _addChannelText, value); }
+    public double UiScale { get => _uiScale; set => SetProperty(ref _uiScale, value); }
 
     public ICommand AddListCommand { get; }
     public ICommand DeleteListCommand { get; }
@@ -116,6 +138,8 @@ public class MainViewModel : BaseViewModel
         _takeout = takeout;
         _cookies = cookies;
         _webView2Cookies = webView2Cookies;
+
+        _uiScale = _settings.LoadSettings().UiScale;
 
         AddListCommand = new AsyncRelayCommand(AddListAsync);
         DeleteListCommand = new AsyncRelayCommand(DeleteListAsync, () => SelectedList != null);
@@ -183,17 +207,18 @@ public class MainViewModel : BaseViewModel
         var context = SelectedChannel != null ? $"\"{SelectedChannel.Name}\"" : $"\"{SelectedList.Name}\"";
         StatusMessage = $"Loading videos for {context}...";
 
+        var sortOrder = SelectedChannel?.SortOrder ?? VideoSortOrder.OldestFirst;
         List<Video> videos;
         if (ShowWatched)
         {
             videos = SelectedChannel != null
-                ? await _db.GetAllVideosForChannelAsync(SelectedChannel.Id)
+                ? await _db.GetAllVideosForChannelAsync(SelectedChannel.Id, sortOrder)
                 : await _db.GetAllVideosForListAsync(SelectedList.Id);
         }
         else
         {
             videos = SelectedChannel != null
-                ? await _db.GetUnwatchedVideosForChannelAsync(SelectedChannel.Id)
+                ? await _db.GetUnwatchedVideosForChannelAsync(SelectedChannel.Id, sortOrder)
                 : await _db.GetUnwatchedVideosForListAsync(SelectedList.Id);
         }
 
@@ -693,11 +718,12 @@ public class MainViewModel : BaseViewModel
             Owner = Application.Current.MainWindow
         };
         win.ShowDialog();
+        UiScale = _settings.LoadSettings().UiScale;
     }
 
     private void ShowMessageHistory()
     {
-        var win = new Views.MessageHistoryWindow(Enumerable.Reverse(_messageHistory))
+        var win = new Views.MessageHistoryWindow(Enumerable.Reverse(_messageHistory), UiScale)
         {
             Owner = Application.Current.MainWindow
         };

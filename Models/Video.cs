@@ -8,6 +8,12 @@ public enum VideoStatus
     NotInterested = 3
 }
 
+public enum VideoSortOrder
+{
+    OldestFirst = 0,
+    NewestFirst = 1
+}
+
 public class Video
 {
     public int Id { get; set; }
