@@ -44,6 +44,7 @@ public class MainViewModel : BaseViewModel
     private bool _showWatched;
     private string _statusMessage = "Ready";
     private string _addChannelText = string.Empty;
+    private readonly List<string> _messageHistory = [];
 
     public ObservableCollection<ChannelListItem> Lists { get; } = [];
     public ObservableCollection<ChannelItem> Channels { get; } = [];
@@ -76,7 +77,19 @@ public class MainViewModel : BaseViewModel
         get => _showWatched;
         set { if (SetProperty(ref _showWatched, value)) _ = LoadVideosAsync(); }
     }
-    public string StatusMessage { get => _statusMessage; set => SetProperty(ref _statusMessage, value); }
+    public string StatusMessage
+    {
+        get => _statusMessage;
+        set
+        {
+            if (SetProperty(ref _statusMessage, value) && !string.IsNullOrEmpty(value))
+            {
+                _messageHistory.Add($"[{DateTime.Now:HH:mm:ss}] {value}");
+                if (_messageHistory.Count > 100)
+                    _messageHistory.RemoveAt(0);
+            }
+        }
+    }
     public string AddChannelText { get => _addChannelText; set => SetProperty(ref _addChannelText, value); }
 
     public ICommand AddListCommand { get; }
@@ -90,6 +103,9 @@ public class MainViewModel : BaseViewModel
     public ICommand ExportListCommand { get; }
     public ICommand ImportListCommand { get; }
     public ICommand OpenSettingsCommand { get; }
+    public ICommand ShowMessageHistoryCommand { get; }
+    public ICommand RefreshAllCommand { get; }
+    public ICommand LoadFromSubscriptionsCommand { get; }
 
     public MainViewModel(DatabaseService db, YouTubeService yt, SettingsService settings, GoogleAuthService auth, TakeoutImportService takeout, ChromeCookieService cookies, WebView2CookieService webView2Cookies)
     {
@@ -112,6 +128,9 @@ public class MainViewModel : BaseViewModel
         ExportListCommand = new AsyncRelayCommand(ExportListAsync, () => SelectedList != null && !IsBusy);
         ImportListCommand = new AsyncRelayCommand(ImportListAsync, () => !IsBusy);
         OpenSettingsCommand = new RelayCommand(OpenSettings);
+        ShowMessageHistoryCommand = new RelayCommand(ShowMessageHistory);
+        RefreshAllCommand = new AsyncRelayCommand(RefreshAllAsync, () => !IsBusy);
+        LoadFromSubscriptionsCommand = new AsyncRelayCommand(LoadFromSubscriptionsAsync, () => !IsBusy);
     }
 
     public async Task InitializeAsync()
@@ -287,7 +306,7 @@ public class MainViewModel : BaseViewModel
         }
         catch (Exception ex)
         {
-            StatusMessage = $"Error: {ex.Message}";
+            StatusMessage = $"Error: {GetFullMessage(ex)}";
         }
         finally
         {
@@ -335,7 +354,7 @@ public class MainViewModel : BaseViewModel
                 }
                 catch (Exception ex)
                 {
-                    StatusMessage = $"Error on {channel.Name}: {ex.Message}";
+                    StatusMessage = $"Error on {channel.Name}: {GetFullMessage(ex)}";
                     await Task.Delay(1000);
                 }
             }
@@ -383,7 +402,7 @@ public class MainViewModel : BaseViewModel
         }
         catch (Exception ex)
         {
-            StatusMessage = $"Import failed: {ex.Message}";
+            StatusMessage = $"Import failed: {GetFullMessage(ex)}";
         }
         finally
         {
@@ -408,25 +427,31 @@ public class MainViewModel : BaseViewModel
             var knownIds = await _db.GetAllWatchHistoryIdsAsync();
             var progress = new Progress<string>(msg => StatusMessage = msg);
 
-            var newIds = await _yt.FetchWatchHistoryViaInnerTubeAsync(browserCookies, knownIds, progress);
+            var allFetchedIds = await _yt.FetchWatchHistoryViaInnerTubeAsync(browserCookies, progress);
 
-            if (newIds.Count == 0)
+            if (allFetchedIds.Count == 0)
             {
-                StatusMessage = "Watch history is already up to date — no new videos found.";
+                StatusMessage = "No watch history returned — debug file saved to %TEMP%\\yt_history_debug.json. Check that you are signed in.";
                 return;
             }
 
-            StatusMessage = $"Found {newIds.Count} new watched videos, updating database...";
-            await _db.SaveWatchHistoryAsync(newIds);
-            var marked = await _db.MarkWatchedByYouTubeIdsAsync(newIds);
-            StatusMessage = $"Sync complete — {newIds.Count} new IDs saved, {marked} video(s) marked as watched.";
+            StatusMessage = $"Fetched {allFetchedIds.Count} IDs from YouTube history, updating...";
+
+            var newIds = allFetchedIds.Where(id => !knownIds.Contains(id)).ToList();
+            if (newIds.Count > 0)
+                await _db.SaveWatchHistoryAsync(newIds);
+
+            var marked = await _db.MarkWatchedByYouTubeIdsAsync(allFetchedIds);
+            StatusMessage = newIds.Count > 0
+                ? $"Sync complete — fetched {allFetchedIds.Count} IDs, {newIds.Count} new, {marked} video(s) marked as watched."
+                : $"Sync complete — fetched {allFetchedIds.Count} IDs, {marked} video(s) marked as watched.";
 
             await RefreshChannelCountsAsync();
             await LoadVideosAsync();
         }
         catch (Exception ex)
         {
-            StatusMessage = $"Sync failed: {ex.Message}";
+            StatusMessage = $"Sync failed: {GetFullMessage(ex)}";
         }
         finally
         {
@@ -482,7 +507,7 @@ public class MainViewModel : BaseViewModel
         }
         catch (Exception ex)
         {
-            StatusMessage = $"Import failed: {ex.Message}";
+            StatusMessage = $"Import failed: {GetFullMessage(ex)}";
             return;
         }
 
@@ -527,7 +552,133 @@ public class MainViewModel : BaseViewModel
         }
         catch (Exception ex)
         {
-            StatusMessage = $"Import failed: {ex.Message}";
+            StatusMessage = $"Import failed: {GetFullMessage(ex)}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private async Task RefreshAllAsync()
+    {
+        var apiKey = _settings.LoadSettings().YouTubeApiKey;
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            MessageBox.Show("Please set your YouTube API key in Settings first.", "No API Key", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        IsBusy = true;
+        var maxVideos = _settings.LoadSettings().MaxVideosPerChannel;
+
+        try
+        {
+            var allChannels = await _db.GetAllChannelsAsync();
+            if (allChannels.Count == 0)
+            {
+                StatusMessage = "No channels found across any list.";
+                return;
+            }
+
+            int count = 0;
+            foreach (var channel in allChannels)
+            {
+                count++;
+                StatusMessage = $"Refreshing {count}/{allChannels.Count}: {channel.Name}";
+                try
+                {
+                    var videos = await _yt.FetchRecentVideosAsync(channel.YouTubeChannelId, apiKey, maxVideos);
+                    await _db.UpsertVideosAsync(channel.Id, videos);
+                    await _db.UpdateChannelLastFetchedAsync(channel.Id);
+                }
+                catch (Exception ex)
+                {
+                    StatusMessage = $"Error on {channel.Name}: {GetFullMessage(ex)}";
+                    await Task.Delay(1000);
+                }
+            }
+
+            StatusMessage = $"Refresh all complete — {allChannels.Count} channel(s) updated";
+            await RefreshChannelCountsAsync();
+            await LoadVideosAsync();
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private async Task LoadFromSubscriptionsAsync()
+    {
+        IsBusy = true;
+        StatusMessage = "Reading YouTube session...";
+        try
+        {
+            var owner = Application.Current.MainWindow;
+            var browserCookies = await _webView2Cookies.GetYouTubeCookiesAsync(owner);
+            if (browserCookies.Count == 0)
+            {
+                StatusMessage = "YouTube sign-in cancelled.";
+                return;
+            }
+
+            var progress = new Progress<string>(msg => StatusMessage = msg);
+            var channels = await _yt.FetchSubscribedChannelsViaInnerTubeAsync(browserCookies, progress);
+
+            if (channels.Count == 0)
+            {
+                StatusMessage = "No subscribed channels found. Debug file saved to %TEMP%\\YouTubeToolLogs\\yt_subscriptions_debug.json.";
+                return;
+            }
+
+            // Filter out channels already in any existing list
+            var existingIds = (await _db.GetAllChannelsAsync())
+                .Select(c => c.YouTubeChannelId)
+                .ToHashSet(StringComparer.Ordinal);
+
+            var newChannels = channels
+                .Where(c => !existingIds.Contains(c.YouTubeChannelId))
+                .ToList();
+
+            int skipped = channels.Count - newChannels.Count;
+
+            if (newChannels.Count == 0)
+            {
+                StatusMessage = $"All {channels.Count} subscribed channel(s) are already in your lists.";
+                return;
+            }
+
+            // Continue numbering from after the highest existing "YouTube Subs N" list
+            int nextListNumber = Lists
+                .Select(l => l.Name)
+                .Where(n => n.StartsWith("YouTube Subs ", StringComparison.OrdinalIgnoreCase))
+                .Select(n => int.TryParse(n["YouTube Subs ".Length..], out var num) ? num : 0)
+                .DefaultIfEmpty(0)
+                .Max() + 1;
+
+            StatusMessage = $"Found {newChannels.Count} new channel(s) ({skipped} already in lists), creating lists...";
+
+            const int batchSize = 30;
+            int listsCreated = 0;
+            for (int i = 0; i < newChannels.Count; i += batchSize)
+            {
+                var batch = newChannels.Skip(i).Take(batchSize).ToList();
+                var listName = $"YouTube Subs {nextListNumber++}";
+                StatusMessage = $"Creating \"{listName}\" ({batch.Count} channels)...";
+                var list = await _db.AddListAsync(listName);
+                Lists.Add(new ChannelListItem(list));
+                foreach (var info in batch)
+                    await _db.AddChannelToListAsync(list.Id, info);
+                listsCreated++;
+            }
+
+            var skippedNote = skipped > 0 ? $", {skipped} already in lists" : "";
+            StatusMessage = $"Done — created {listsCreated} list(s) with {newChannels.Count} new channel(s){skippedNote}.";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Load subscriptions failed: {GetFullMessage(ex)}";
         }
         finally
         {
@@ -542,5 +693,23 @@ public class MainViewModel : BaseViewModel
             Owner = Application.Current.MainWindow
         };
         win.ShowDialog();
+    }
+
+    private void ShowMessageHistory()
+    {
+        var win = new Views.MessageHistoryWindow(Enumerable.Reverse(_messageHistory))
+        {
+            Owner = Application.Current.MainWindow
+        };
+        win.Show();
+    }
+
+    private static string GetFullMessage(Exception ex)
+    {
+        var parts = new List<string>();
+        for (var e = (Exception?)ex; e != null; e = e.InnerException)
+            if (!string.IsNullOrWhiteSpace(e.Message))
+                parts.Add(e.Message);
+        return string.Join(" → ", parts);
     }
 }

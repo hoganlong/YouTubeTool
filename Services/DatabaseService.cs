@@ -93,6 +93,12 @@ public class DatabaseService(IDbContextFactory<AppDbContext> factory)
         await db.SaveChangesAsync();
     }
 
+    public async Task<List<Channel>> GetAllChannelsAsync()
+    {
+        await using var db = await factory.CreateDbContextAsync();
+        return await db.Channels.ToListAsync();
+    }
+
     public async Task<Channel?> GetChannelByYouTubeIdAsync(string ytChannelId)
     {
         await using var db = await factory.CreateDbContextAsync();
@@ -258,6 +264,8 @@ public class DatabaseService(IDbContextFactory<AppDbContext> factory)
             if (incoming.ThumbnailUrl != null)
                 video.ThumbnailUrl = incoming.ThumbnailUrl;
             video.IsShort = incoming.IsShort;
+            if (video.Status == VideoStatus.Unwatched && alreadyWatchedIds.Contains(video.YouTubeVideoId))
+                video.Status = VideoStatus.Watched;
         }
 
         await db.SaveChangesAsync();
@@ -273,7 +281,7 @@ public class DatabaseService(IDbContextFactory<AppDbContext> factory)
     {
         await using var db = await factory.CreateDbContextAsync();
 
-        var incoming = youTubeVideoIds.ToList();
+        var incoming = youTubeVideoIds.Distinct().ToList();
         var existing = await db.WatchHistory
             .Where(w => incoming.Contains(w.YouTubeVideoId))
             .Select(w => w.YouTubeVideoId)

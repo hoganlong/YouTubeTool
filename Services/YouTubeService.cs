@@ -1,3 +1,4 @@
+using System.IO;
 using Google.Apis.Auth.OAuth2;
 using Google.Apis.Services;
 using GoogleYT = Google.Apis.YouTube.v3;
@@ -68,9 +69,11 @@ public class YouTubeService
         chanReq.Id = ytChannelId;
         chanReq.MaxResults = 1;
         var chanResp = await chanReq.ExecuteAsync();
+        // Channel not found or terminated — return empty rather than error
         var uploadsPlaylistId = chanResp.Items?.FirstOrDefault()
-            ?.ContentDetails?.RelatedPlaylists?.Uploads
-            ?? throw new Exception($"Could not find uploads playlist for channel {ytChannelId}");
+            ?.ContentDetails?.RelatedPlaylists?.Uploads;
+        if (string.IsNullOrEmpty(uploadsPlaylistId))
+            return [];
 
         // Step 2: Fetch videos from playlist (costs 1 quota unit per page)
         var videos = new List<VideoInfo>();
@@ -83,7 +86,16 @@ public class YouTubeService
             playReq.MaxResults = Math.Min(maxResults - videos.Count, 50);
             if (pageToken != null) playReq.PageToken = pageToken;
 
-            var playResp = await playReq.ExecuteAsync();
+            GoogleYT.Data.PlaylistItemListResponse playResp;
+            try
+            {
+                playResp = await playReq.ExecuteAsync();
+            }
+            catch (Exception ex) when (ex.Message.Contains("NotFound"))
+            {
+                // Uploads playlist not accessible — channel may be suspended or restricted
+                break;
+            }
 
             foreach (var item in playResp.Items ?? [])
             {
@@ -145,11 +157,146 @@ public class YouTubeService
         return shortIds;
     }
 
+    // Fetch unique subscribed channels via YouTube's InnerTube API using browser session cookies.
+    public async Task<List<ChannelInfo>> FetchSubscribedChannelsViaInnerTubeAsync(
+        Dictionary<string, string> cookies,
+        IProgress<string>? progress = null)
+    {
+        if (!cookies.TryGetValue("SAPISID", out var sapisid))
+            throw new Exception("YouTube session not found. Make sure you are signed in to YouTube in the browser.");
+
+        var cookieHeader = string.Join("; ", cookies.Select(kv => $"{kv.Key}={kv.Value}"));
+        using var http = new System.Net.Http.HttpClient();
+        http.DefaultRequestHeaders.Add("Cookie", cookieHeader);
+        http.DefaultRequestHeaders.Add("Authorization", ChromeCookieService.BuildSapiSidHash(sapisid));
+        http.DefaultRequestHeaders.Add("X-Origin", "https://www.youtube.com");
+        http.DefaultRequestHeaders.Add("Origin", "https://www.youtube.com");
+        http.DefaultRequestHeaders.Add("User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+
+        const string context = """{"client":{"clientName":"WEB","clientVersion":"2.20240101.00.00","hl":"en","gl":"US"}}""";
+        var seen = new Dictionary<string, ChannelInfo>(StringComparer.Ordinal);
+        string? continuation = null;
+        bool firstPage = true;
+
+        while (true)
+        {
+            progress?.Report($"Fetching subscriptions... ({seen.Count} channels so far)");
+
+            var bodyJson = continuation == null
+                ? $$"""{"browseId":"FEchannels","context":{{context}}}"""
+                : $$"""{"continuation":"{{continuation}}","context":{{context}}}""";
+
+            using var httpContent = new System.Net.Http.StringContent(
+                bodyJson, System.Text.Encoding.UTF8, "application/json");
+            var resp = await http.PostAsync("https://www.youtube.com/youtubei/v1/browse", httpContent);
+            var json = await resp.Content.ReadAsStringAsync();
+
+            if (!resp.IsSuccessStatusCode)
+                throw new Exception($"InnerTube returned HTTP {(int)resp.StatusCode} ({resp.ReasonPhrase}). Check that you are signed in.");
+
+            // Save first-page response as a debug file
+            if (firstPage)
+            {
+                try
+                {
+                    var logDir = Path.Combine(Path.GetTempPath(), "YouTubeToolLogs");
+                    Directory.CreateDirectory(logDir);
+                    File.WriteAllText(Path.Combine(logDir, "yt_subscriptions_debug.json"), json);
+                }
+                catch { }
+            }
+
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var items = firstPage
+                ? GetInnerTubeInitialItems(doc.RootElement)
+                : GetInnerTubeContinuationItems(doc.RootElement);
+            firstPage = false;
+
+            var pageChannels = ExtractSubscribedChannels(items);
+            foreach (var ch in pageChannels)
+                seen.TryAdd(ch.YouTubeChannelId, ch);
+
+            continuation = ExtractSubscriptionContinuationToken(items);
+            if (pageChannels.Count == 0 || continuation == null) break;
+        }
+
+        return [.. seen.Values];
+    }
+
+    private static List<ChannelInfo> ExtractSubscribedChannels(System.Text.Json.JsonElement[] items)
+    {
+        // Structure: itemSectionRenderer > contents[] > shelfRenderer
+        //            > content.expandedShelfContentsRenderer.items[] > channelRenderer
+        var channels = new List<ChannelInfo>();
+        foreach (var section in items)
+        {
+            if (!section.TryGetProperty("itemSectionRenderer", out var isr) ||
+                !isr.TryGetProperty("contents", out var isrContents)) continue;
+
+            foreach (var isrItem in isrContents.EnumerateArray())
+            {
+                if (!isrItem.TryGetProperty("shelfRenderer", out var shelf) ||
+                    !shelf.TryGetProperty("content", out var shelfContent) ||
+                    !shelfContent.TryGetProperty("expandedShelfContentsRenderer", out var expanded) ||
+                    !expanded.TryGetProperty("items", out var shelfItems)) continue;
+
+                foreach (var shelfItem in shelfItems.EnumerateArray())
+                {
+                    if (TryParseChannelRenderer(shelfItem, out var ch) && ch != null)
+                        channels.Add(ch);
+                }
+            }
+        }
+        return channels;
+    }
+
+    private static bool TryParseChannelRenderer(System.Text.Json.JsonElement item, out ChannelInfo? channel)
+    {
+        channel = null;
+        if (!item.TryGetProperty("channelRenderer", out var cr)) return false;
+
+        if (!cr.TryGetProperty("channelId", out var idEl)) return true;
+        var id = idEl.GetString();
+        if (string.IsNullOrEmpty(id)) return true;
+
+        var name = id;
+        if (cr.TryGetProperty("title", out var titleEl))
+        {
+            if (titleEl.TryGetProperty("simpleText", out var st))
+                name = st.GetString() ?? id;
+            else if (titleEl.TryGetProperty("runs", out var runs) && runs.GetArrayLength() > 0 &&
+                     runs[0].TryGetProperty("text", out var rt))
+                name = rt.GetString() ?? id;
+        }
+
+        string? thumbnailUrl = null;
+        if (cr.TryGetProperty("thumbnail", out var thumb) &&
+            thumb.TryGetProperty("thumbnails", out var thumbs))
+        {
+            var arr = thumbs.EnumerateArray().ToArray();
+            if (arr.Length > 0 && arr[^1].TryGetProperty("url", out var urlEl))
+            {
+                var url = urlEl.GetString();
+                // Thumbnail URLs are protocol-relative (//yt3...) — make them absolute
+                if (url != null && url.StartsWith("//"))
+                    url = "https:" + url;
+                thumbnailUrl = url;
+            }
+        }
+
+        channel = new ChannelInfo(id, name, thumbnailUrl);
+        return true;
+    }
+
+    // Continuation token lives at the top-level sections array as a continuationItemRenderer.
+    private static string? ExtractSubscriptionContinuationToken(System.Text.Json.JsonElement[] items) =>
+        ExtractInnerTubeContinuationToken(items);
+
     // Fetch recently watched video IDs via YouTube's InnerTube API using browser session cookies.
     // Pages through history newest-first, stopping once all IDs on a page are already known.
     public async Task<List<string>> FetchWatchHistoryViaInnerTubeAsync(
         Dictionary<string, string> cookies,
-        HashSet<string> knownIds,
         IProgress<string>? progress = null,
         int maxPages = 5)
     {
@@ -167,12 +314,12 @@ public class YouTubeService
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
 
         const string context = """{"client":{"clientName":"WEB","clientVersion":"2.20240101.00.00","hl":"en","gl":"US"}}""";
-        var newIds = new List<string>();
+        var allIds = new List<string>();
         string? continuation = null;
 
         for (int page = 0; page < maxPages; page++)
         {
-            progress?.Report($"Fetching watch history... ({newIds.Count} new so far)");
+            progress?.Report($"Fetching watch history... ({allIds.Count} so far)");
 
             var bodyJson = continuation == null
                 ? $$"""{"browseId":"FEhistory","context":{{context}}}"""
@@ -197,13 +344,12 @@ public class YouTubeService
             var pageIds = ExtractInnerTubeVideoIds(items);
             continuation = ExtractInnerTubeContinuationToken(items);
 
-            foreach (var id in pageIds.Where(id => !knownIds.Contains(id)))
-                newIds.Add(id);
+            allIds.AddRange(pageIds);
 
             if (pageIds.Count == 0 || continuation == null) break;
         }
 
-        return newIds;
+        return allIds;
     }
 
     private static System.Text.Json.JsonElement[] GetInnerTubeInitialItems(System.Text.Json.JsonElement root)
@@ -219,12 +365,9 @@ public class YouTubeService
                 .GetProperty("sectionListRenderer")
                 .GetProperty("contents");
 
-            foreach (var section in sectionList.EnumerateArray())
-            {
-                if (section.TryGetProperty("itemSectionRenderer", out var itemSection) &&
-                    itemSection.TryGetProperty("contents", out var contents))
-                    return contents.EnumerateArray().ToArray();
-            }
+            // Return ALL top-level sections — includes itemSectionRenderer groups
+            // (one per date: "Today", "Yesterday", etc.) and continuationItemRenderer
+            return sectionList.EnumerateArray().ToArray();
         }
         catch { }
         return [];
@@ -249,23 +392,44 @@ public class YouTubeService
         var ids = new List<string>();
         foreach (var item in items)
         {
-            // New structure: lockupViewModel.contentId
-            if (item.TryGetProperty("lockupViewModel", out var lockup) &&
-                lockup.TryGetProperty("contentId", out var contentId))
+            // itemSectionRenderer groups videos by date ("Today", "Yesterday", etc.)
+            // Recurse into their contents to get the actual video items
+            if (item.TryGetProperty("itemSectionRenderer", out var section) &&
+                section.TryGetProperty("contents", out var sectionContents))
             {
-                var id = contentId.GetString();
-                if (!string.IsNullOrEmpty(id)) ids.Add(id);
+                foreach (var sectionItem in sectionContents.EnumerateArray())
+                    ExtractVideoId(sectionItem, ids);
                 continue;
             }
-            // Legacy structure: videoRenderer.videoId
-            if (item.TryGetProperty("videoRenderer", out var video) &&
-                video.TryGetProperty("videoId", out var videoId))
-            {
-                var id = videoId.GetString();
-                if (!string.IsNullOrEmpty(id)) ids.Add(id);
-            }
+
+            ExtractVideoId(item, ids);
         }
         return ids;
+    }
+
+    private static void ExtractVideoId(System.Text.Json.JsonElement item, List<string> ids)
+    {
+        // Unwrap richItemRenderer if present
+        var content = item;
+        if (item.TryGetProperty("richItemRenderer", out var rich) &&
+            rich.TryGetProperty("content", out var richContent))
+            content = richContent;
+
+        // New structure: lockupViewModel.contentId
+        if (content.TryGetProperty("lockupViewModel", out var lockup) &&
+            lockup.TryGetProperty("contentId", out var contentId))
+        {
+            var id = contentId.GetString();
+            if (!string.IsNullOrEmpty(id)) ids.Add(id);
+            return;
+        }
+        // Legacy structure: videoRenderer.videoId
+        if (content.TryGetProperty("videoRenderer", out var video) &&
+            video.TryGetProperty("videoId", out var videoId))
+        {
+            var id = videoId.GetString();
+            if (!string.IsNullOrEmpty(id)) ids.Add(id);
+        }
     }
 
     private static string? ExtractInnerTubeContinuationToken(System.Text.Json.JsonElement[] items)

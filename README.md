@@ -7,13 +7,16 @@ A WPF desktop app (.NET 10, Windows) for managing YouTube channel watchlists. Tr
 ## What It Does
 
 - Organize YouTube channels into named **Lists**
-- **Refresh** any list or channel to pull recent videos from the YouTube API
+- **Refresh** any list to pull recent videos, or **Refresh All** to update every channel at once
+- **Load Subscriptions** — import all your YouTube subscriptions via browser sign-in, auto-split into lists of 30 (skips channels already in any list)
 - Videos display oldest-first so you watch in order
 - Mark each video as **Watched**, **Skip** (DontWatch), or **Not Interested** (✕)
 - **Show Watched** toggle to reveal/hide watched videos
 - **Mark All Watched** button to bulk-clear a list
 - Detects **YouTube Shorts** (≤3 min) — shows `(SHORT)` after title, portrait thumbnail
 - **Import Takeout** — import your Google Takeout watch-history.json to auto-mark already-watched videos
+- **Sync Watch History** — sign in to YouTube via browser to sync watched videos
+- **Message History** — `?` button on the status bar opens a scrollable log of all status messages with copy support
 - Persists all state in SQLite
 
 ---
@@ -177,6 +180,9 @@ Shorts get:
 ---
 
 ## Known Issues / Gotchas
+
+### Suspended or deleted channels
+If a subscribed channel has been suspended or deleted by YouTube, Refresh and Refresh All will silently skip it (no error shown). The channel remains in your list but will never have new videos.
 
 ### Watch History Sync (Sync Watch History button)
 Google restricts the `watchHistory` playlist API endpoint — it returns empty results even with valid OAuth. The button exists but will always report no results. **Use Google Takeout import instead.**
