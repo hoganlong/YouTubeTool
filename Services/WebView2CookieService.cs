@@ -24,24 +24,23 @@ public class WebView2CookieService
         catch { return null; }
     }
 
-    public void SignOut()
+    // Clears the session by deleting all cookies via WebView2's own API.
+    // This is more reliable than deleting files — WebView2 background processes
+    // often hold file locks on the user data folder, causing silent deletion failures.
+    public async Task SignOutAsync()
     {
-        if (!Directory.Exists(UserDataPath)) return;
         try
         {
-            Directory.Delete(UserDataPath, recursive: true);
+            await WithWebViewAsync(webView =>
+            {
+                webView.CoreWebView2.CookieManager.DeleteAllCookies();
+                return Task.CompletedTask;
+            });
         }
-        catch (IOException)
-        {
-            // Some files (e.g. BrowsingTopicsSiteData) may be locked by WebView2 background
-            // processes. Deleting the Default profile folder is sufficient to clear the session.
-            var defaultProfile = Path.Combine(UserDataPath, "Default");
-            if (Directory.Exists(defaultProfile))
-                Directory.Delete(defaultProfile, recursive: true);
-            // Also clear the brand account context file
-            var onBehalfOfPath = Path.Combine(UserDataPath, "on_behalf_of.txt");
-            try { File.Delete(onBehalfOfPath); } catch { }
-        }
+        catch { }
+
+        // Clear the brand account context
+        try { File.Delete(Path.Combine(UserDataPath, "on_behalf_of.txt")); } catch { }
     }
 
     // Returns stored WebView2 cookies without showing a login window.
@@ -67,7 +66,24 @@ public class WebView2CookieService
     // Spins up a hidden WebView2 with our user data folder, reads YouTube cookies, disposes it.
     private static async Task<Dictionary<string, string>> ReadCookiesAsync()
     {
-        var tcs = new TaskCompletionSource<Dictionary<string, string>>();
+        Dictionary<string, string>? result = null;
+        Exception? error = null;
+
+        await WithWebViewAsync(async webView =>
+        {
+            var raw = await webView.CoreWebView2.CookieManager
+                .GetCookiesAsync("https://www.youtube.com");
+            result = raw.ToDictionary(c => c.Name, c => c.Value);
+        });
+
+        if (error != null) throw error;
+        return result ?? [];
+    }
+
+    // Helper: creates a hidden WebView2 window, runs an action, then closes it.
+    private static async Task WithWebViewAsync(Func<WebView2, Task> action)
+    {
+        var tcs = new TaskCompletionSource();
 
         await Application.Current.Dispatcher.InvokeAsync(async () =>
         {
@@ -89,11 +105,8 @@ public class WebView2CookieService
                 Directory.CreateDirectory(UserDataPath);
                 var env = await CoreWebView2Environment.CreateAsync(null, UserDataPath);
                 await webView.EnsureCoreWebView2Async(env);
-
-                var raw = await webView.CoreWebView2.CookieManager
-                    .GetCookiesAsync("https://www.youtube.com");
-
-                tcs.SetResult(raw.ToDictionary(c => c.Name, c => c.Value));
+                await action(webView);
+                tcs.SetResult();
             }
             catch (Exception ex)
             {
@@ -105,6 +118,6 @@ public class WebView2CookieService
             }
         });
 
-        return await tcs.Task;
+        await tcs.Task;
     }
 }

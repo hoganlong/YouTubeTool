@@ -58,7 +58,7 @@ public class SettingsViewModel : BaseViewModel
         TestApiKeyCommand = new AsyncRelayCommand(TestApiKeyAsync);
         SignInCommand = new AsyncRelayCommand(SignInAsync, () => !_authService.IsSignedIn);
         SignOutCommand = new AsyncRelayCommand(SignOutAsync, () => _authService.IsSignedIn);
-        ClearYouTubeSessionCommand = new RelayCommand(ClearYouTubeSession);
+        ClearYouTubeSessionCommand = new AsyncRelayCommand(ClearYouTubeSessionAsync);
     }
 
     private void UpdateSignInStatus()
@@ -143,15 +143,16 @@ public class SettingsViewModel : BaseViewModel
         }
     }
 
-    private void ClearYouTubeSession()
+    private async Task ClearYouTubeSessionAsync()
     {
-        _webView2Cookies.SignOut();
+        YouTubeSessionStatus = "Clearing session...";
+        await _webView2Cookies.SignOutAsync();
         YouTubeSessionStatus = "Session cleared — sign in again when you next use Load Subscriptions.";
     }
 
     public async Task SwitchYouTubeAccountAsync(System.Windows.Window owner)
     {
-        _webView2Cookies.SignOut();
+        await _webView2Cookies.SignOutAsync();
         YouTubeSessionStatus = "Opening sign-in window...";
         var cookies = await _webView2Cookies.GetYouTubeCookiesAsync(owner);
         YouTubeSessionStatus = cookies.ContainsKey("SAPISID")
