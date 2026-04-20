@@ -202,6 +202,23 @@ public class YouTubeService
             try { File.WriteAllText(Path.Combine(logDir, $"yt_subscriptions_p{pageNum}.json"), json); } catch { }
 
             using var doc = System.Text.Json.JsonDocument.Parse(json);
+
+            // Log which account is signed in (datasyncId) on the first page
+            if (pageNum == 0)
+            {
+                try
+                {
+                    var datasyncId = doc.RootElement
+                        .GetProperty("responseContext")
+                        .GetProperty("mainAppWebResponseContext")
+                        .GetProperty("datasyncId")
+                        .GetString() ?? "unknown";
+                    File.AppendAllText(Path.Combine(logDir, "yt_subscriptions_summary.txt"),
+                        $"--- Run started, signed-in account datasyncId: {datasyncId} ---\n");
+                }
+                catch { }
+            }
+
             var items = pageNum == 0
                 ? GetInnerTubeInitialItems(doc.RootElement)
                 : GetInnerTubeContinuationItems(doc.RootElement);

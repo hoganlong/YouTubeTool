@@ -24,4 +24,7 @@ public partial class SettingsWindow : Window
 
     private void ClientSecretBox_PasswordChanged(object sender, RoutedEventArgs e)
         => _vm.OAuthClientSecret = ((PasswordBox)sender).Password;
+
+    private async void SwitchAccount_Click(object sender, RoutedEventArgs e)
+        => await _vm.SwitchYouTubeAccountAsync(this);
 }

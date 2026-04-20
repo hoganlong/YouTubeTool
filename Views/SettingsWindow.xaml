@@ -67,16 +67,19 @@
         <!-- YouTube Browser Session -->
         <TextBlock Text="YouTube Browser Session" FontWeight="Bold" Margin="0,0,0,4"/>
         <TextBlock TextWrapping="Wrap" Foreground="Gray" Margin="0,0,0,8"
-                   Text="Used for Watch History Sync and Load Subscriptions. If you signed into the wrong Google account, clear the session here — you'll be prompted to sign in again next time you use either feature."/>
+                   Text="Used for Watch History Sync and Load Subscriptions. Use 'Switch Account' to sign in as a different Google account right now."/>
         <Grid Margin="0,0,0,4">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <TextBlock Grid.Column="0" Text="{Binding YouTubeSessionStatus}"
                        Foreground="{Binding YouTubeSessionStatus, Converter={StaticResource TestResultColorConverter}}"
                        VerticalAlignment="Center"/>
-            <Button Grid.Column="1" Content="Clear Session" Width="100"
+            <Button Grid.Column="1" Content="Switch Account" Width="115" Margin="0,0,6,0"
+                    Click="SwitchAccount_Click"/>
+            <Button Grid.Column="2" Content="Clear Session" Width="100"
                     Command="{Binding ClearYouTubeSessionCommand}"/>
         </Grid>
 

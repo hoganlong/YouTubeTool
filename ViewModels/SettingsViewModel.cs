@@ -52,6 +52,7 @@ public class SettingsViewModel : BaseViewModel
         _uiScale = settings.UiScale;
 
         UpdateSignInStatus();
+        UpdateYouTubeSessionStatus();
 
         SaveCommand = new RelayCommand(Save);
         TestApiKeyCommand = new AsyncRelayCommand(TestApiKeyAsync);
@@ -122,9 +123,39 @@ public class SettingsViewModel : BaseViewModel
         UpdateSignInStatus();
     }
 
+    private void UpdateYouTubeSessionStatus()
+    {
+        _ = UpdateYouTubeSessionStatusAsync();
+    }
+
+    private async Task UpdateYouTubeSessionStatusAsync()
+    {
+        try
+        {
+            var cookies = await _webView2Cookies.TryGetStoredCookiesAsync();
+            YouTubeSessionStatus = cookies.ContainsKey("SAPISID")
+                ? "Session: active (signed in)"
+                : "Session: none — will prompt for sign-in";
+        }
+        catch
+        {
+            YouTubeSessionStatus = "Session: unknown";
+        }
+    }
+
     private void ClearYouTubeSession()
     {
         _webView2Cookies.SignOut();
-        YouTubeSessionStatus = "✓ Session cleared — you'll be prompted to sign in again next time.";
+        YouTubeSessionStatus = "Session cleared — sign in again when you next use Load Subscriptions.";
+    }
+
+    public async Task SwitchYouTubeAccountAsync(System.Windows.Window owner)
+    {
+        _webView2Cookies.SignOut();
+        YouTubeSessionStatus = "Opening sign-in window...";
+        var cookies = await _webView2Cookies.GetYouTubeCookiesAsync(owner);
+        YouTubeSessionStatus = cookies.ContainsKey("SAPISID")
+            ? "✓ Signed in successfully — new account will be used for subscriptions."
+            : "Sign-in cancelled.";
     }
 }
