@@ -11,6 +11,12 @@ public class WebView2CookieService
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "YouTubeTool", "webview2");
 
+    public void SignOut()
+    {
+        if (Directory.Exists(UserDataPath))
+            Directory.Delete(UserDataPath, recursive: true);
+    }
+
     // Returns YouTube cookies from our persistent WebView2 session.
     // Shows the login window if not yet logged in.
     public async Task<Dictionary<string, string>> GetYouTubeCookiesAsync(Window owner)

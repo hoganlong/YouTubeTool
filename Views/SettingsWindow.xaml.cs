@@ -12,7 +12,7 @@ public partial class SettingsWindow : Window
     public SettingsWindow()
     {
         InitializeComponent();
-        _vm = new SettingsViewModel(App.SettingsService, App.YouTubeService, App.GoogleAuthService);
+        _vm = new SettingsViewModel(App.SettingsService, App.YouTubeService, App.GoogleAuthService, App.WebView2CookieService);
         _vm.CloseRequested += () => DialogResult = true;
         DataContext = _vm;
         ApiKeyBox.Password = _vm.ApiKey;

@@ -64,6 +64,24 @@
 
         <Separator Margin="0,12,0,12"/>
 
+        <!-- YouTube Browser Session -->
+        <TextBlock Text="YouTube Browser Session" FontWeight="Bold" Margin="0,0,0,4"/>
+        <TextBlock TextWrapping="Wrap" Foreground="Gray" Margin="0,0,0,8"
+                   Text="Used for Watch History Sync and Load Subscriptions. If you signed into the wrong Google account, clear the session here — you'll be prompted to sign in again next time you use either feature."/>
+        <Grid Margin="0,0,0,4">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="{Binding YouTubeSessionStatus}"
+                       Foreground="{Binding YouTubeSessionStatus, Converter={StaticResource TestResultColorConverter}}"
+                       VerticalAlignment="Center"/>
+            <Button Grid.Column="1" Content="Clear Session" Width="100"
+                    Command="{Binding ClearYouTubeSessionCommand}"/>
+        </Grid>
+
+        <Separator Margin="0,12,0,12"/>
+
         <!-- Other settings -->
         <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
             <TextBlock Text="Max videos per channel:" VerticalAlignment="Center" Margin="0,0,8,0"/>

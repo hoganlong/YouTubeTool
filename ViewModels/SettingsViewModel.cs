@@ -9,12 +9,14 @@ public class SettingsViewModel : BaseViewModel
     private readonly SettingsService _settingsService;
     private readonly YouTubeService _youTubeService;
     private readonly GoogleAuthService _authService;
+    private readonly WebView2CookieService _webView2Cookies;
 
     private string _apiKey = string.Empty;
     private string _oAuthClientId = string.Empty;
     private string _oAuthClientSecret = string.Empty;
     private string _testResult = string.Empty;
     private string _signInStatus = string.Empty;
+    private string _youTubeSessionStatus = string.Empty;
     private int _maxVideos = 50;
     private double _uiScale = 1.0;
 
@@ -25,19 +27,22 @@ public class SettingsViewModel : BaseViewModel
     public double UiScale { get => _uiScale; set => SetProperty(ref _uiScale, value); }
     public string TestResult { get => _testResult; set => SetProperty(ref _testResult, value); }
     public string SignInStatus { get => _signInStatus; set => SetProperty(ref _signInStatus, value); }
+    public string YouTubeSessionStatus { get => _youTubeSessionStatus; set => SetProperty(ref _youTubeSessionStatus, value); }
 
     public ICommand SaveCommand { get; }
     public ICommand TestApiKeyCommand { get; }
     public ICommand SignInCommand { get; }
     public ICommand SignOutCommand { get; }
+    public ICommand ClearYouTubeSessionCommand { get; }
 
     public event Action? CloseRequested;
 
-    public SettingsViewModel(SettingsService settingsService, YouTubeService youTubeService, GoogleAuthService authService)
+    public SettingsViewModel(SettingsService settingsService, YouTubeService youTubeService, GoogleAuthService authService, WebView2CookieService webView2Cookies)
     {
         _settingsService = settingsService;
         _youTubeService = youTubeService;
         _authService = authService;
+        _webView2Cookies = webView2Cookies;
 
         var settings = settingsService.LoadSettings();
         _apiKey = settings.YouTubeApiKey;
@@ -52,6 +57,7 @@ public class SettingsViewModel : BaseViewModel
         TestApiKeyCommand = new AsyncRelayCommand(TestApiKeyAsync);
         SignInCommand = new AsyncRelayCommand(SignInAsync, () => !_authService.IsSignedIn);
         SignOutCommand = new AsyncRelayCommand(SignOutAsync, () => _authService.IsSignedIn);
+        ClearYouTubeSessionCommand = new RelayCommand(ClearYouTubeSession);
     }
 
     private void UpdateSignInStatus()
@@ -114,5 +120,11 @@ public class SettingsViewModel : BaseViewModel
     {
         await _authService.SignOutAsync();
         UpdateSignInStatus();
+    }
+
+    private void ClearYouTubeSession()
+    {
+        _webView2Cookies.SignOut();
+        YouTubeSessionStatus = "✓ Session cleared — you'll be prompted to sign in again next time.";
     }
 }

@@ -16,6 +16,7 @@ public partial class App : Application
     public static YouTubeService YouTubeService { get; private set; } = null!;
     public static GoogleAuthService GoogleAuthService { get; private set; } = null!;
     public static TakeoutImportService TakeoutImportService { get; private set; } = null!;
+    public static WebView2CookieService WebView2CookieService { get; private set; } = null!;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -74,6 +75,7 @@ public partial class App : Application
         YouTubeService = _serviceProvider.GetRequiredService<YouTubeService>();
         GoogleAuthService = _serviceProvider.GetRequiredService<GoogleAuthService>();
         TakeoutImportService = _serviceProvider.GetRequiredService<TakeoutImportService>();
+        WebView2CookieService = _serviceProvider.GetRequiredService<WebView2CookieService>();
 
         // Silently restore saved OAuth session if credentials are configured
         var savedSettings = SettingsService.LoadSettings();
