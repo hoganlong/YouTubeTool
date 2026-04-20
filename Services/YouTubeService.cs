@@ -177,7 +177,10 @@ public class YouTubeService
         const string context = """{"client":{"clientName":"WEB","clientVersion":"2.20240101.00.00","hl":"en","gl":"US"}}""";
         var seen = new Dictionary<string, ChannelInfo>(StringComparer.Ordinal);
         string? continuation = null;
-        bool firstPage = true;
+        int pageNum = 0;
+
+        var logDir = Path.Combine(Path.GetTempPath(), "YouTubeToolLogs");
+        try { Directory.CreateDirectory(logDir); } catch { }
 
         while (true)
         {
@@ -195,30 +198,41 @@ public class YouTubeService
             if (!resp.IsSuccessStatusCode)
                 throw new Exception($"InnerTube returned HTTP {(int)resp.StatusCode} ({resp.ReasonPhrase}). Check that you are signed in.");
 
-            // Save first-page response as a debug file
-            if (firstPage)
-            {
-                try
-                {
-                    var logDir = Path.Combine(Path.GetTempPath(), "YouTubeToolLogs");
-                    Directory.CreateDirectory(logDir);
-                    File.WriteAllText(Path.Combine(logDir, "yt_subscriptions_debug.json"), json);
-                }
-                catch { }
-            }
+            // Save every page response for debugging
+            try { File.WriteAllText(Path.Combine(logDir, $"yt_subscriptions_p{pageNum}.json"), json); } catch { }
 
             using var doc = System.Text.Json.JsonDocument.Parse(json);
-            var items = firstPage
+            var items = pageNum == 0
                 ? GetInnerTubeInitialItems(doc.RootElement)
                 : GetInnerTubeContinuationItems(doc.RootElement);
-            firstPage = false;
 
             var pageChannels = ExtractSubscribedChannels(items);
             foreach (var ch in pageChannels)
                 seen.TryAdd(ch.YouTubeChannelId, ch);
 
             continuation = ExtractSubscriptionContinuationToken(items);
-            if (pageChannels.Count == 0 || continuation == null) break;
+
+            // If page 0 had no continuationItemRenderer, YouTube showed a shelf preview only.
+            // Look for a sort-chip continuation token in the header — that gives the full list.
+            bool usedSortChip = false;
+            if (pageNum == 0 && continuation == null)
+            {
+                continuation = ExtractSortChipContinuationToken(doc.RootElement);
+                usedSortChip = continuation != null;
+            }
+
+            // Log a summary of what was parsed on this page
+            try
+            {
+                var note = usedSortChip ? " [using sort-chip token for full list]" : "";
+                File.AppendAllText(Path.Combine(logDir, "yt_subscriptions_summary.txt"),
+                    $"Page {pageNum}: {pageChannels.Count} channels parsed, continuation={(continuation != null ? "yes" : "no")}{note}, total so far={seen.Count}\n");
+            }
+            catch { }
+
+            pageNum++;
+            // Stop if no continuation token, or if a non-initial page returned nothing (safety valve)
+            if (continuation == null || (pageNum > 1 && pageChannels.Count == 0)) break;
         }
 
         return [.. seen.Values];
@@ -226,8 +240,10 @@ public class YouTubeService
 
     private static List<ChannelInfo> ExtractSubscribedChannels(System.Text.Json.JsonElement[] items)
     {
-        // Structure: itemSectionRenderer > contents[] > shelfRenderer
-        //            > content.expandedShelfContentsRenderer.items[] > channelRenderer
+        // Handles two response shapes:
+        // Shape A (initial FEchannels page): itemSectionRenderer > shelfRenderer
+        //         > expandedShelfContentsRenderer.items[] > channelRenderer
+        // Shape B (sort-chip continuation): itemSectionRenderer > contents[] > channelRenderer directly
         var channels = new List<ChannelInfo>();
         foreach (var section in items)
         {
@@ -236,16 +252,23 @@ public class YouTubeService
 
             foreach (var isrItem in isrContents.EnumerateArray())
             {
-                if (!isrItem.TryGetProperty("shelfRenderer", out var shelf) ||
-                    !shelf.TryGetProperty("content", out var shelfContent) ||
-                    !shelfContent.TryGetProperty("expandedShelfContentsRenderer", out var expanded) ||
-                    !expanded.TryGetProperty("items", out var shelfItems)) continue;
-
-                foreach (var shelfItem in shelfItems.EnumerateArray())
+                // Shape A: shelf preview wrapping
+                if (isrItem.TryGetProperty("shelfRenderer", out var shelf) &&
+                    shelf.TryGetProperty("content", out var shelfContent) &&
+                    shelfContent.TryGetProperty("expandedShelfContentsRenderer", out var expanded) &&
+                    expanded.TryGetProperty("items", out var shelfItems))
                 {
-                    if (TryParseChannelRenderer(shelfItem, out var ch) && ch != null)
-                        channels.Add(ch);
+                    foreach (var shelfItem in shelfItems.EnumerateArray())
+                    {
+                        if (TryParseChannelRenderer(shelfItem, out var ch) && ch != null)
+                            channels.Add(ch);
+                    }
+                    continue;
                 }
+
+                // Shape B: channelRenderer directly in itemSectionRenderer.contents
+                if (TryParseChannelRenderer(isrItem, out var directCh) && directCh != null)
+                    channels.Add(directCh);
             }
         }
         return channels;
@@ -292,6 +315,79 @@ public class YouTubeService
     // Continuation token lives at the top-level sections array as a continuationItemRenderer.
     private static string? ExtractSubscriptionContinuationToken(System.Text.Json.JsonElement[] items) =>
         ExtractInnerTubeContinuationToken(items);
+
+    // When FEchannels returns only a shelf preview (no continuationItemRenderer),
+    // extract a sort-chip continuation token from the header chipBarViewModel.
+    // Using this token with the browse endpoint returns the full paginated channel list.
+    private static string? ExtractSortChipContinuationToken(System.Text.Json.JsonElement root)
+    {
+        try
+        {
+            var chips = root
+                .GetProperty("contents")
+                .GetProperty("twoColumnBrowseResultsRenderer")
+                .GetProperty("tabs")[0]
+                .GetProperty("tabRenderer")
+                .GetProperty("content")
+                .GetProperty("sectionListRenderer")
+                .GetProperty("header")
+                .GetProperty("chipBarViewModel")
+                .GetProperty("chips");
+
+            foreach (var chip in chips.EnumerateArray())
+            {
+                var token = TryExtractChipSheetToken(chip);
+                if (token != null) return token;
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    // Navigate the nested sheet structure inside a chipBarViewModel chip to find a continuation token.
+    private static string? TryExtractChipSheetToken(System.Text.Json.JsonElement chip)
+    {
+        try
+        {
+            var listItems = chip
+                .GetProperty("tapCommand")
+                .GetProperty("innertubeCommand")
+                .GetProperty("showSheetCommand")
+                .GetProperty("panelLoadingStrategy")
+                .GetProperty("inlineContent")
+                .GetProperty("sheetViewModel")
+                .GetProperty("content")
+                .GetProperty("listViewModel")
+                .GetProperty("listItems");
+
+            foreach (var listItem in listItems.EnumerateArray())
+            {
+                try
+                {
+                    var commands = listItem
+                        .GetProperty("rendererContext")
+                        .GetProperty("commandContext")
+                        .GetProperty("onTap")
+                        .GetProperty("innertubeCommand")
+                        .GetProperty("commandExecutorCommand")
+                        .GetProperty("commands");
+
+                    foreach (var cmd in commands.EnumerateArray())
+                    {
+                        if (cmd.TryGetProperty("continuationCommand", out var contCmd) &&
+                            contCmd.TryGetProperty("token", out var tokenEl))
+                        {
+                            var token = tokenEl.GetString();
+                            if (!string.IsNullOrEmpty(token)) return token;
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+        catch { }
+        return null;
+    }
 
     // Fetch recently watched video IDs via YouTube's InnerTube API using browser session cookies.
     // Pages through history newest-first, stopping once all IDs on a page are already known.
