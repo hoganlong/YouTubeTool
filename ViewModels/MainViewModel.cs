@@ -728,37 +728,11 @@ public class MainViewModel : BaseViewModel
         win.Show();
     }
 
-    // Cookie priority:
-    //   1. WebView2 stored session — the account explicitly signed in via this app.
-    //      This takes priority so users signed in as a specific account aren't
-    //      overridden by whatever account is active in their system browser.
-    //   2. Chrome/Edge/Brave — convenient fallback if no app session exists yet.
-    //   3. WebView2 sign-in window — if neither of the above works.
+    // Use the stored WebView2 session if one exists; otherwise prompt for sign-in.
+    // Chrome/Edge/Brave cookies are no longer used as a fallback — they bypass
+    // brand account switching and prevent Clear Session from prompting again.
     private async Task<Dictionary<string, string>> GetYouTubeCookiesAsync()
     {
-        try
-        {
-            var webView2Cookies = await _webView2Cookies.TryGetStoredCookiesAsync();
-            if (webView2Cookies.ContainsKey("SAPISID"))
-            {
-                StatusMessage = "Using saved YouTube session.";
-                return webView2Cookies;
-            }
-        }
-        catch { }
-
-        try
-        {
-            var chromeCookies = await _cookies.GetYouTubeCookiesAsync();
-            if (chromeCookies.ContainsKey("SAPISID"))
-            {
-                StatusMessage = "Using active browser session.";
-                return chromeCookies;
-            }
-        }
-        catch { /* Chrome locked or unavailable — fall through */ }
-
-        StatusMessage = "No saved session — please sign in to YouTube in the window that opens.";
         var owner = Application.Current.MainWindow;
         return await _webView2Cookies.GetYouTubeCookiesAsync(owner);
     }
