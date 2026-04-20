@@ -28,6 +28,10 @@ public class WebView2CookieService
         }
     }
 
+    // Returns stored WebView2 cookies without showing a login window.
+    // Returns an empty dict if no session exists yet.
+    public Task<Dictionary<string, string>> TryGetStoredCookiesAsync() => ReadCookiesAsync();
+
     // Returns YouTube cookies from our persistent WebView2 session.
     // Shows the login window if not yet logged in.
     public async Task<Dictionary<string, string>> GetYouTubeCookiesAsync(Window owner)

@@ -34,8 +34,16 @@ public partial class YouTubeLoginWindow : Window
         }
         else
         {
+            var currentUrl = WebView.CoreWebView2.Source;
+            var cookieNames = cookies.Count > 0
+                ? string.Join(", ", cookies.Select(c => c.Name))
+                : "(none)";
+
             MessageBox.Show(
-                "Not signed in yet. Please sign into YouTube in the browser above, then click Done.",
+                $"Not signed in yet — SAPISID cookie not found.\n\n" +
+                $"Current page: {currentUrl}\n" +
+                $"YouTube cookies found: {cookieNames}\n\n" +
+                "Please sign into YouTube in the browser above, then click Done.",
                 "Not Signed In", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }

@@ -481,6 +481,10 @@ public class YouTubeService
         {
             foreach (var action in root.GetProperty("onResponseReceivedActions").EnumerateArray())
             {
+                // Sort-chip continuations use reloadContinuationItemsCommand (replaces content)
+                // Regular pagination uses appendContinuationItemsAction (adds to content)
+                if (action.TryGetProperty("reloadContinuationItemsCommand", out var reloadAction))
+                    return reloadAction.GetProperty("continuationItems").EnumerateArray().ToArray();
                 if (action.TryGetProperty("appendContinuationItemsAction", out var appendAction))
                     return appendAction.GetProperty("continuationItems").EnumerateArray().ToArray();
             }
