@@ -7,12 +7,15 @@ A WPF desktop app (.NET 10, Windows) for managing YouTube channel watchlists. Tr
 ## What It Does
 
 - Organize YouTube channels into named **Lists**
+- Lists display **(x/y)** — x channels with unwatched videos, y total unwatched — so you can see at a glance which lists need attention
 - **Refresh** any list to pull recent videos, or **Refresh All** to update every channel at once
 - **Load Subscriptions** — import all your YouTube subscriptions via browser sign-in, auto-split into lists of 30 (skips channels already in any list)
 - Videos display oldest-first so you watch in order
 - Mark each video as **Watched**, **Skip** (DontWatch), or **Not Interested** (✕)
 - **Show Watched** toggle to reveal/hide watched videos
 - **Mark All Watched** button to bulk-clear a list
+- Channel names are **bold** when they have unwatched videos, and wrap to multiple lines if long
+- Drag channels between lists — status bar shows live progress during the move
 - Detects **YouTube Shorts** (≤3 min) — shows `(SHORT)` after title, portrait thumbnail
 - **Import Takeout** — import your Google Takeout watch-history.json to auto-mark already-watched videos
 - **Sync Watch History** — sign in to YouTube via browser to sync watched videos

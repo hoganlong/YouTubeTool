@@ -230,7 +230,7 @@
                          Drop="ListsListBox_Drop">
                     <ListBox.ItemTemplate>
                         <DataTemplate>
-                            <TextBlock Text="{Binding Name}" Padding="4,3"
+                            <TextBlock Text="{Binding DisplayName}" Padding="4,3"
                                        TextTrimming="CharacterEllipsis"/>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
@@ -300,13 +300,25 @@
                          SelectedItem="{Binding SelectedChannel}"
                          AllowDrop="True"
                          Padding="4"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                          PreviewMouseLeftButtonDown="ChannelListBox_PreviewMouseLeftButtonDown"
                          PreviewMouseMove="ChannelListBox_PreviewMouseMove"
                          Drop="ChannelListBox_Drop">
                     <ListBox.ItemTemplate>
                         <DataTemplate>
                             <TextBlock Text="{Binding DisplayName}" Padding="4,3"
-                                       TextTrimming="CharacterEllipsis"/>
+                                       TextWrapping="Wrap">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="FontWeight" Value="Bold"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding UnwatchedCount}" Value="0">
+                                                <Setter Property="FontWeight" Value="Normal"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
                     <ListBox.ItemContainerStyle>

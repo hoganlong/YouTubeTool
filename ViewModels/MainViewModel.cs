@@ -9,8 +9,13 @@ namespace YouTubeTool.ViewModels;
 public class ChannelListItem : BaseViewModel
 {
     private string _name;
+    private int _channelsWithUnwatched;
+    private int _totalUnwatched;
     public int Id { get; }
     public string Name { get => _name; set => SetProperty(ref _name, value); }
+    public int ChannelsWithUnwatched { get => _channelsWithUnwatched; set { if (SetProperty(ref _channelsWithUnwatched, value)) OnPropertyChanged(nameof(DisplayName)); } }
+    public int TotalUnwatched { get => _totalUnwatched; set { if (SetProperty(ref _totalUnwatched, value)) OnPropertyChanged(nameof(DisplayName)); } }
+    public string DisplayName => TotalUnwatched > 0 ? $"{Name} ({ChannelsWithUnwatched}/{TotalUnwatched})" : Name;
     public ChannelListItem(ChannelList list) { Id = list.Id; _name = list.Name; }
 }
 
@@ -163,6 +168,7 @@ public class MainViewModel : BaseViewModel
         Lists.Clear();
         foreach (var l in lists)
             Lists.Add(new ChannelListItem(l));
+        await RefreshAllListCountsAsync();
     }
 
     private async Task LoadChannelsAsync()
@@ -191,6 +197,25 @@ public class MainViewModel : BaseViewModel
         {
             ch.UnwatchedCount = counts.TryGetValue(ch.Id, out var n) ? n : 0;
             ch.RefreshDisplayName();
+        }
+        await RefreshAllListCountsAsync();
+    }
+
+    private async Task RefreshAllListCountsAsync()
+    {
+        var summary = await _db.GetUnwatchedSummaryForAllListsAsync();
+        foreach (var list in Lists)
+        {
+            if (summary.TryGetValue(list.Id, out var s))
+            {
+                list.ChannelsWithUnwatched = s.ChannelsWithUnwatched;
+                list.TotalUnwatched = s.TotalUnwatched;
+            }
+            else
+            {
+                list.ChannelsWithUnwatched = 0;
+                list.TotalUnwatched = 0;
+            }
         }
     }
 
@@ -233,9 +258,21 @@ public class MainViewModel : BaseViewModel
     public async Task MoveChannelToListAsync(ChannelItem channel, ChannelListItem targetList)
     {
         if (SelectedList == null || targetList.Id == SelectedList.Id) return;
-        await _db.MoveChannelBetweenListsAsync(channel.Id, SelectedList.Id, targetList.Id);
-        Channels.Remove(channel);
-        await RefreshChannelCountsAsync();
+        IsBusy = true;
+        StatusMessage = $"Moving \"{channel.Name}\" to \"{targetList.Name}\"...";
+        try
+        {
+            await _db.MoveChannelBetweenListsAsync(channel.Id, SelectedList.Id, targetList.Id);
+            StatusMessage = $"Removing channel \"{channel.Name}\"...";
+            Channels.Remove(channel);
+            StatusMessage = "Refreshing counts...";
+            await RefreshChannelCountsAsync();
+            StatusMessage = $"Moved \"{channel.Name}\" to \"{targetList.Name}\".";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
     }
 
     public void MoveChannel(ChannelItem from, ChannelItem to)

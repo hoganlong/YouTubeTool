@@ -23,6 +23,37 @@ public class DatabaseService(IDbContextFactory<AppDbContext> factory)
             .ToListAsync();
     }
 
+    public async Task<Dictionary<int, (int ChannelsWithUnwatched, int TotalUnwatched)>> GetUnwatchedSummaryForAllListsAsync()
+    {
+        await using var db = await factory.CreateDbContextAsync();
+
+        // Aggregate unwatched counts per channel in SQL
+        var channelCounts = await db.Videos
+            .Where(v => v.Status == VideoStatus.Unwatched)
+            .GroupBy(v => v.ChannelId)
+            .Select(g => new { ChannelId = g.Key, Count = g.Count() })
+            .ToListAsync();
+
+        if (channelCounts.Count == 0)
+            return new Dictionary<int, (int, int)>();
+
+        var channelIds = channelCounts.Select(c => c.ChannelId).ToList();
+        var countLookup = channelCounts.ToDictionary(c => c.ChannelId, c => c.Count);
+
+        // Get list memberships only for channels that have unwatched videos
+        var pairs = await db.Set<ChannelListChannel>()
+            .Where(j => channelIds.Contains(j.ChannelsId))
+            .Select(j => new { j.ListsId, j.ChannelsId })
+            .ToListAsync();
+
+        return pairs
+            .GroupBy(x => x.ListsId)
+            .ToDictionary(
+                g => g.Key,
+                g => (g.Count(), g.Sum(x => countLookup[x.ChannelsId]))
+            );
+    }
+
     public async Task<Dictionary<int, int>> GetUnwatchedCountsForListAsync(int listId)
     {
         await using var db = await factory.CreateDbContextAsync();
