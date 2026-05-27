@@ -146,7 +146,14 @@ public class MainViewModel : BaseViewModel
     public RefreshMode RefreshMode
     {
         get => _refreshMode;
-        set { if (SetProperty(ref _refreshMode, value)) OnPropertyChanged(nameof(RefreshAllButtonText)); }
+        set
+        {
+            if (!SetProperty(ref _refreshMode, value)) return;
+            OnPropertyChanged(nameof(RefreshAllButtonText));
+            var s = _settings.LoadSettings();
+            s.RefreshMode = value.ToString();
+            _settings.SaveSettings(s);
+        }
     }
 
     public string RefreshAllButtonText => _refreshMode switch
@@ -190,7 +197,10 @@ public class MainViewModel : BaseViewModel
         _cookies = cookies;
         _webView2Cookies = webView2Cookies;
 
-        _uiScale = _settings.LoadSettings().UiScale;
+        var loadedSettings = _settings.LoadSettings();
+        _uiScale = loadedSettings.UiScale;
+        if (Enum.TryParse<RefreshMode>(loadedSettings.RefreshMode, ignoreCase: true, out var savedMode))
+            _refreshMode = savedMode;
 
         AddListCommand = new AsyncRelayCommand(AddListAsync);
         DeleteListCommand = new AsyncRelayCommand(DeleteListAsync, () => SelectedList != null);

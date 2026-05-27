@@ -7,4 +7,5 @@ public class AppSettings
     public string OAuthClientId { get; set; } = string.Empty;
     public string OAuthClientSecret { get; set; } = string.Empty;
     public double UiScale { get; set; } = 1.0;
+    public string RefreshMode { get; set; } = "All";
 }
