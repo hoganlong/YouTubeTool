@@ -10,11 +10,15 @@ public partial class MainWindow : Window
 {
     private Point _dragStartPoint;
     private ChannelItem? _draggedChannel;
+    private ChannelListItem? _draggedList;
 
     public MainWindow(MainViewModel viewModel)
     {
         InitializeComponent();
         DataContext = viewModel;
+        var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+        if (version != null)
+            Title = $"YouTubeTool v{version.Major}.{version.Minor}.{version.Build}";
         Loaded += async (_, _) => await viewModel.InitializeAsync();
     }
 
@@ -54,16 +58,63 @@ public partial class MainWindow : Window
         ((MainViewModel)DataContext).MoveChannel(dragged, target);
     }
 
+    private void ListsListBox_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        _dragStartPoint = e.GetPosition(null);
+    }
+
+    private void ListsListBox_PreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed) return;
+        var pos = e.GetPosition(null);
+        var diff = pos - _dragStartPoint;
+        if (Math.Abs(diff.X) < SystemParameters.MinimumHorizontalDragDistance &&
+            Math.Abs(diff.Y) < SystemParameters.MinimumVerticalDragDistance)
+            return;
+
+        var item = FindAncestor<ListBoxItem>((DependencyObject)e.OriginalSource);
+        if (item == null) return;
+        _draggedList = item.DataContext as ChannelListItem;
+        if (_draggedList == null) return;
+
+        DragDrop.DoDragDrop(ListsListBox, _draggedList, DragDropEffects.Move);
+        _draggedList = null;
+    }
+
     private void ListsListBox_Drop(object sender, DragEventArgs e)
     {
-        if (_draggedChannel == null) return;
-        var dragged = _draggedChannel;
-        _draggedChannel = null;
+        if (_draggedList != null)
+        {
+            var dragged = _draggedList;
+            _draggedList = null;
+            var target = FindAncestor<ListBoxItem>((DependencyObject)e.OriginalSource)?.DataContext as ChannelListItem;
+            if (target == null || target == dragged) return;
+            ((MainViewModel)DataContext).MoveList(dragged, target);
+        }
+        else if (_draggedChannel != null)
+        {
+            var dragged = _draggedChannel;
+            _draggedChannel = null;
+            var targetList = FindAncestor<ListBoxItem>((DependencyObject)e.OriginalSource)?.DataContext as ChannelListItem;
+            if (targetList == null) return;
+            _ = ((MainViewModel)DataContext).MoveChannelToListAsync(dragged, targetList);
+        }
+    }
 
-        var targetList = FindAncestor<ListBoxItem>((DependencyObject)e.OriginalSource)?.DataContext as ChannelListItem;
-        if (targetList == null) return;
+    private void RefreshAllDropdown_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button btn && btn.ContextMenu != null)
+        {
+            btn.ContextMenu.PlacementTarget = btn;
+            btn.ContextMenu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+            btn.ContextMenu.IsOpen = true;
+        }
+    }
 
-        _ = ((MainViewModel)DataContext).MoveChannelToListAsync(dragged, targetList);
+    private void RefreshMode_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is MenuItem mi && mi.Tag is string tag && DataContext is MainViewModel vm)
+            vm.SetRefreshMode(tag);
     }
 
     private static T? FindAncestor<T>(DependencyObject obj) where T : DependencyObject

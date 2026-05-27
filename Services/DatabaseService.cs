@@ -27,9 +27,10 @@ public class DatabaseService(IDbContextFactory<AppDbContext> factory)
     {
         await using var db = await factory.CreateDbContextAsync();
 
-        // Aggregate unwatched counts per channel in SQL
+        // Aggregate unwatched counts per channel in SQL, excluding shorts for channels
+        // that have HideShorts=true.
         var channelCounts = await db.Videos
-            .Where(v => v.Status == VideoStatus.Unwatched)
+            .Where(v => v.Status == VideoStatus.Unwatched && (!v.Channel.HideShorts || !v.IsShort))
             .GroupBy(v => v.ChannelId)
             .Select(g => new { ChannelId = g.Key, Count = g.Count() })
             .ToListAsync();
@@ -64,7 +65,8 @@ public class DatabaseService(IDbContextFactory<AppDbContext> factory)
             .ToListAsync();
 
         return await db.Videos
-            .Where(v => channelIds.Contains(v.ChannelId) && v.Status == VideoStatus.Unwatched)
+            .Where(v => channelIds.Contains(v.ChannelId) && v.Status == VideoStatus.Unwatched
+                     && (!v.Channel.HideShorts || !v.IsShort))
             .GroupBy(v => v.ChannelId)
             .Select(g => new { ChannelId = g.Key, Count = g.Count() })
             .ToDictionaryAsync(x => x.ChannelId, x => x.Count);
@@ -80,7 +82,8 @@ public class DatabaseService(IDbContextFactory<AppDbContext> factory)
             .ToListAsync();
 
         return await db.Videos
-            .Where(v => channelIds.Contains(v.ChannelId) && v.Status == VideoStatus.Unwatched)
+            .Where(v => channelIds.Contains(v.ChannelId) && v.Status == VideoStatus.Unwatched
+                     && (!v.Channel.HideShorts || !v.IsShort))
             .Include(v => v.Channel)
             .OrderBy(v => v.PublishedAt)
             .ToListAsync();
@@ -90,7 +93,8 @@ public class DatabaseService(IDbContextFactory<AppDbContext> factory)
     {
         await using var db = await factory.CreateDbContextAsync();
         var query = db.Videos
-            .Where(v => v.ChannelId == channelId && v.Status == VideoStatus.Unwatched)
+            .Where(v => v.ChannelId == channelId && v.Status == VideoStatus.Unwatched
+                     && (!v.Channel.HideShorts || !v.IsShort))
             .Include(v => v.Channel);
         return sortOrder == VideoSortOrder.NewestFirst
             ? await query.OrderByDescending(v => v.PublishedAt).ToListAsync()
@@ -129,6 +133,18 @@ public class DatabaseService(IDbContextFactory<AppDbContext> factory)
     {
         await using var db = await factory.CreateDbContextAsync();
         return await db.Channels.ToListAsync();
+    }
+
+    public async Task<List<Channel>> GetChannelsForListsAsync(IEnumerable<int> listIds)
+    {
+        var ids = listIds.Distinct().ToList();
+        if (ids.Count == 0) return [];
+        await using var db = await factory.CreateDbContextAsync();
+        return await db.Set<ChannelListChannel>()
+            .Where(j => ids.Contains(j.ListsId))
+            .Select(j => j.Channel)
+            .Distinct()
+            .ToListAsync();
     }
 
     public async Task<Channel?> GetChannelByYouTubeIdAsync(string ytChannelId)
@@ -198,7 +214,8 @@ public class DatabaseService(IDbContextFactory<AppDbContext> factory)
             .ToListAsync();
 
         return await db.Videos
-            .Where(v => channelIds.Contains(v.ChannelId))
+            .Where(v => channelIds.Contains(v.ChannelId)
+                     && (!v.Channel.HideShorts || !v.IsShort))
             .Include(v => v.Channel)
             .OrderBy(v => v.PublishedAt)
             .ToListAsync();
@@ -208,7 +225,8 @@ public class DatabaseService(IDbContextFactory<AppDbContext> factory)
     {
         await using var db = await factory.CreateDbContextAsync();
         var query = db.Videos
-            .Where(v => v.ChannelId == channelId)
+            .Where(v => v.ChannelId == channelId
+                     && (!v.Channel.HideShorts || !v.IsShort))
             .Include(v => v.Channel);
         return sortOrder == VideoSortOrder.NewestFirst
             ? await query.OrderByDescending(v => v.PublishedAt).ToListAsync()
@@ -294,11 +312,14 @@ public class DatabaseService(IDbContextFactory<AppDbContext> factory)
         foreach (var video in existingVideos)
         {
             if (!incomingLookup.TryGetValue(video.YouTubeVideoId, out var incoming)) continue;
+            video.Title = incoming.Title;
             if (incoming.ThumbnailUrl != null)
                 video.ThumbnailUrl = incoming.ThumbnailUrl;
             video.IsShort = incoming.IsShort;
-            if (video.Status == VideoStatus.Unwatched && alreadyWatchedIds.Contains(video.YouTubeVideoId))
-                video.Status = VideoStatus.Watched;
+            // Note: do NOT re-apply WatchHistory to existing videos here.
+            // WatchHistory auto-marks only on initial insert; after that the user's
+            // manual Watched/Unwatched action is the source of truth. Re-applying on
+            // every refresh would override manual Unwatched and fight user intent.
         }
 
         await db.SaveChangesAsync();
@@ -371,6 +392,20 @@ public class DatabaseService(IDbContextFactory<AppDbContext> factory)
         await db.SaveChangesAsync();
     }
 
+    public async Task UpdateListOrderAsync(IEnumerable<int> listIds)
+    {
+        await using var db = await factory.CreateDbContextAsync();
+        var ids = listIds.ToList();
+        var lists = await db.ChannelLists.Where(l => ids.Contains(l.Id)).ToListAsync();
+        for (int i = 0; i < ids.Count; i++)
+        {
+            var list = lists.FirstOrDefault(l => l.Id == ids[i]);
+            if (list != null)
+                list.SortOrder = i;
+        }
+        await db.SaveChangesAsync();
+    }
+
     public async Task UpdateChannelOrderAsync(int listId, IEnumerable<int> channelIds)
     {
         await using var db = await factory.CreateDbContextAsync();
@@ -410,5 +445,13 @@ public class DatabaseService(IDbContextFactory<AppDbContext> factory)
         await db.Channels
             .Where(c => c.Id == channelId)
             .ExecuteUpdateAsync(s => s.SetProperty(c => c.VideoSortOrder, sortOrder));
+    }
+
+    public async Task UpdateChannelHideShortsAsync(int channelId, bool hideShorts)
+    {
+        await using var db = await factory.CreateDbContextAsync();
+        await db.Channels
+            .Where(c => c.Id == channelId)
+            .ExecuteUpdateAsync(s => s.SetProperty(c => c.HideShorts, hideShorts));
     }
 }

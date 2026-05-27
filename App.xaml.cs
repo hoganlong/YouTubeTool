@@ -25,6 +25,20 @@ public partial class App : Application
         // Catch unhandled exceptions on the UI thread
         DispatcherUnhandledException += (_, args) =>
         {
+            // Known WPF / .NET 10 issue on some Windows hosts: WPF's tooltip code path
+            // (System.Windows.Controls.Primitives.Popup.PopupSecurityHelper.ForceMsaaToUiaBridge)
+            // P/Invokes into a UI Automation bridge DLL that isn't always present (depends on
+            // installed accessibility software / Windows feature state) and throws
+            // FileNotFoundException. ToolTipService fires this from its own DispatcherTimer,
+            // so the crash can happen with the app sitting in the background, no user input —
+            // exactly the symptom we hit on 2026-05-14. The exception is harmless (the tooltip
+            // just doesn't show); swallow it instead of killing the app or showing an error
+            // dialog the user can't act on.
+            if (IsKnownWpfTooltipUiaBridgeException(args.Exception))
+            {
+                args.Handled = true;
+                return;
+            }
             ShowError(args.Exception);
             args.Handled = true;
         };
@@ -97,6 +111,23 @@ public partial class App : Application
         "YouTubeTool", "error.log");
 
     private static int _showingError;
+
+    // Returns true if `ex` is the FileNotFoundException thrown by WPF's tooltip popup
+    // when it cannot load the MSAA-to-UIA accessibility bridge native DLL. See the
+    // DispatcherUnhandledException handler above for the full context.
+    private static bool IsKnownWpfTooltipUiaBridgeException(Exception? ex)
+    {
+        while (ex != null)
+        {
+            if (ex is FileNotFoundException &&
+                (ex.StackTrace?.Contains("PopupSecurityHelper.ForceMsaaToUiaBridge", StringComparison.Ordinal) ?? false))
+            {
+                return true;
+            }
+            ex = ex.InnerException;
+        }
+        return false;
+    }
 
     private static void ShowError(Exception ex)
     {

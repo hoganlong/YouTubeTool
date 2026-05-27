@@ -204,9 +204,29 @@
                         <Button Content="⚙ Settings" Padding="6,4"
                                 Command="{Binding OpenSettingsCommand}"
                                 Style="{StaticResource ActionButton}"/>
-                        <Button Content="↻ Refresh All" Margin="0,4,0,0" Padding="6,4"
-                                Command="{Binding RefreshAllCommand}"
-                                Style="{StaticResource PrimaryButton}"/>
+                        <Grid Margin="0,4,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Button Grid.Column="0" Content="▼" Padding="6,4"
+                                    Click="RefreshAllDropdown_Click"
+                                    Style="{StaticResource PrimaryButton}">
+                                <Button.ContextMenu>
+                                    <ContextMenu>
+                                        <MenuItem Header="Refresh All" Tag="All" Click="RefreshMode_Click"/>
+                                        <MenuItem Header="Refresh Top 1" Tag="Top1" Click="RefreshMode_Click"/>
+                                        <MenuItem Header="Refresh Top 2" Tag="Top2" Click="RefreshMode_Click"/>
+                                        <MenuItem Header="Refresh Top 3" Tag="Top3" Click="RefreshMode_Click"/>
+                                        <MenuItem Header="Refresh First Half" Tag="FirstHalf" Click="RefreshMode_Click"/>
+                                        <MenuItem Header="Refresh Second Half" Tag="SecondHalf" Click="RefreshMode_Click"/>
+                                    </ContextMenu>
+                                </Button.ContextMenu>
+                            </Button>
+                            <Button Grid.Column="1" Content="{Binding RefreshAllButtonText}" Padding="6,4"
+                                    Command="{Binding RefreshAllCommand}"
+                                    Style="{StaticResource PrimaryButton}"/>
+                        </Grid>
                         <Button Content="▶ Load Subscriptions" Margin="0,4,0,0" Padding="6,4"
                                 Command="{Binding LoadFromSubscriptionsCommand}"
                                 Style="{StaticResource ActionButton}"/>
@@ -227,6 +247,8 @@
                          SelectedItem="{Binding SelectedList}"
                          AllowDrop="True"
                          Padding="4"
+                         PreviewMouseLeftButtonDown="ListsListBox_PreviewMouseLeftButtonDown"
+                         PreviewMouseMove="ListsListBox_PreviewMouseMove"
                          Drop="ListsListBox_Drop">
                     <ListBox.ItemTemplate>
                         <DataTemplate>
@@ -371,6 +393,12 @@
                                   IsChecked="{Binding ShowWatched}"
                                   VerticalAlignment="Center"
                                   Foreground="#AAA" Margin="6,0,0,0"/>
+                        <CheckBox DockPanel.Dock="Right" Content="Hide Shorts"
+                                  IsChecked="{Binding HideShorts}"
+                                  IsEnabled="{Binding IsChannelSelected}"
+                                  VerticalAlignment="Center"
+                                  Foreground="#AAA" Margin="6,0,0,0"
+                                  ToolTip="Hide Shorts for the selected channel (saved per channel)"/>
                         <ComboBox DockPanel.Dock="Right"
                                   SelectedValue="{Binding ChannelSortOrder}"
                                   SelectedValuePath="Tag"

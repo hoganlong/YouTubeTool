@@ -8,14 +8,17 @@ A WPF desktop app (.NET 10, Windows) for managing YouTube channel watchlists. Tr
 
 - Organize YouTube channels into named **Lists**
 - Lists display **(x/y)** — x channels with unwatched videos, y total unwatched — so you can see at a glance which lists need attention
-- **Refresh** any list to pull recent videos, or **Refresh All** to update every channel at once
+- **Refresh** any list to pull recent videos, or use the **split Refresh button** to refresh a chosen subset:
+  - Click the main button to refresh using the currently selected scope
+  - Click the **▼** arrow on the left to choose **Refresh All**, **Refresh Top 1/2/3**, **Refresh First Half**, or **Refresh Second Half** — the selected option becomes the button's label
 - **Load Subscriptions** — import all your YouTube subscriptions via browser sign-in, auto-split into lists of 30 (skips channels already in any list)
 - Videos display oldest-first so you watch in order
 - Mark each video as **Watched**, **Skip** (DontWatch), or **Not Interested** (✕)
 - **Show Watched** toggle to reveal/hide watched videos
+- **Hide Shorts** — per-channel toggle (saved in DB) that hides Shorts in both the video list and unwatched counts
 - **Mark All Watched** button to bulk-clear a list
 - Channel names are **bold** when they have unwatched videos, and wrap to multiple lines if long
-- Drag channels between lists — status bar shows live progress during the move
+- Drag channels between lists, or drag lists themselves to reorder — status bar shows live progress during the move
 - Detects **YouTube Shorts** (≤3 min) — shows `(SHORT)` after title, portrait thumbnail
 - **Import Takeout** — import your Google Takeout watch-history.json to auto-mark already-watched videos
 - **Sync Watch History** — sign in to YouTube via browser to sync watched videos
@@ -135,9 +138,10 @@ YouTubeTool/
 ├── App.xaml.cs                 # DI setup, EF migration on startup, global error handling
 │
 └── Migrations/
-    ├── InitialCreate           # Base schema
-    ├── AddWatchHistory         # WatchHistory table
-    └── AddIsShort              # IsShort column on Videos
+    ├── InitialCreate              # Base schema
+    ├── AddWatchHistory            # WatchHistory table
+    ├── AddIsShort                 # IsShort column on Videos
+    └── AddHideShortsToChannel     # HideShorts column on Channels
 ```
 
 ---
@@ -208,6 +212,9 @@ using GoogleYT = Google.Apis.YouTube.v3;
 
 ### EF Core Include after SelectMany
 EF Core 10 does not support `.Include()` after `.SelectMany()`. Queries that need related data must be split into two separate queries (get IDs first, then query with Include).
+
+### WPF tooltip UIA-bridge crash
+On some Windows hosts, WPF's tooltip code path (`Popup.PopupSecurityHelper.ForceMsaaToUiaBridge`) P/Invokes into a UI Automation bridge native DLL that isn't always present. When missing, `ToolTipService`'s `DispatcherTimer` throws `FileNotFoundException` — sometimes while the app is idle in the background with no user input. The crash is harmless (the tooltip just doesn't show), so `App.OnStartup` filters this specific exception in `DispatcherUnhandledException` and marks it handled instead of showing the error dialog.
 
 ---
 

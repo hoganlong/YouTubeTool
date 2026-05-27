@@ -8,6 +8,7 @@ public class Channel
     public string? ThumbnailUrl { get; set; }
     public DateTime? LastFetchedAt { get; set; }
     public VideoSortOrder VideoSortOrder { get; set; } = VideoSortOrder.OldestFirst;
+    public bool HideShorts { get; set; }
     public ICollection<Video> Videos { get; set; } = [];
     public ICollection<ChannelList> Lists { get; set; } = [];
 }

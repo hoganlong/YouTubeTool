@@ -26,13 +26,16 @@ public class ChannelItem : BaseViewModel
     public string Name { get; }
     public string YouTubeChannelId { get; }
     public VideoSortOrder SortOrder { get; set; }
+    public bool HideShorts { get; set; }
     public int UnwatchedCount { get => _unwatchedCount; set => SetProperty(ref _unwatchedCount, value); }
     public string DisplayName => UnwatchedCount > 0 ? $"{Name} ({UnwatchedCount})" : Name;
 
-    public ChannelItem(Channel channel) { Id = channel.Id; Name = channel.Name; YouTubeChannelId = channel.YouTubeChannelId; SortOrder = channel.VideoSortOrder; }
+    public ChannelItem(Channel channel) { Id = channel.Id; Name = channel.Name; YouTubeChannelId = channel.YouTubeChannelId; SortOrder = channel.VideoSortOrder; HideShorts = channel.HideShorts; }
 
     public void RefreshDisplayName() => OnPropertyChanged(nameof(DisplayName));
 }
+
+public enum RefreshMode { All, Top1, Top2, Top3, FirstHalf, SecondHalf }
 
 public class MainViewModel : BaseViewModel
 {
@@ -52,6 +55,7 @@ public class MainViewModel : BaseViewModel
     private string _addChannelText = string.Empty;
     private double _uiScale = 1.0;
     private readonly List<string> _messageHistory = [];
+    private RefreshMode _refreshMode = RefreshMode.All;
 
     public ObservableCollection<ChannelListItem> Lists { get; } = [];
     public ObservableCollection<ChannelItem> Channels { get; } = [];
@@ -76,6 +80,7 @@ public class MainViewModel : BaseViewModel
             {
                 OnPropertyChanged(nameof(ChannelSortOrder));
                 OnPropertyChanged(nameof(IsChannelSelected));
+                OnPropertyChanged(nameof(HideShorts));
                 _ = LoadVideosAsync();
             }
         }
@@ -103,6 +108,25 @@ public class MainViewModel : BaseViewModel
         get => _showWatched;
         set { if (SetProperty(ref _showWatched, value)) _ = LoadVideosAsync(); }
     }
+    public bool HideShorts
+    {
+        get => _selectedChannel?.HideShorts ?? false;
+        set
+        {
+            if (_selectedChannel == null || _selectedChannel.HideShorts == value) return;
+            _selectedChannel.HideShorts = value;
+            OnPropertyChanged();
+            _ = SaveHideShortsAndRefreshAsync();
+        }
+    }
+
+    private async Task SaveHideShortsAndRefreshAsync()
+    {
+        if (_selectedChannel == null) return;
+        await _db.UpdateChannelHideShortsAsync(_selectedChannel.Id, _selectedChannel.HideShorts);
+        await LoadVideosAsync();
+        await RefreshChannelCountsAsync();
+    }
     public string StatusMessage
     {
         get => _statusMessage;
@@ -118,6 +142,28 @@ public class MainViewModel : BaseViewModel
     }
     public string AddChannelText { get => _addChannelText; set => SetProperty(ref _addChannelText, value); }
     public double UiScale { get => _uiScale; set => SetProperty(ref _uiScale, value); }
+
+    public RefreshMode RefreshMode
+    {
+        get => _refreshMode;
+        set { if (SetProperty(ref _refreshMode, value)) OnPropertyChanged(nameof(RefreshAllButtonText)); }
+    }
+
+    public string RefreshAllButtonText => _refreshMode switch
+    {
+        RefreshMode.Top1 => "↻ Refresh Top 1",
+        RefreshMode.Top2 => "↻ Refresh Top 2",
+        RefreshMode.Top3 => "↻ Refresh Top 3",
+        RefreshMode.FirstHalf => "↻ Refresh First Half",
+        RefreshMode.SecondHalf => "↻ Refresh Second Half",
+        _ => "↻ Refresh All",
+    };
+
+    public void SetRefreshMode(string tag)
+    {
+        if (Enum.TryParse<RefreshMode>(tag, ignoreCase: true, out var m))
+            RefreshMode = m;
+    }
 
     public ICommand AddListCommand { get; }
     public ICommand DeleteListCommand { get; }
@@ -289,6 +335,21 @@ public class MainViewModel : BaseViewModel
         if (SelectedList == null) return;
         var ids = Channels.Select(c => c.Id).ToList();
         await _db.UpdateChannelOrderAsync(SelectedList.Id, ids);
+    }
+
+    public void MoveList(ChannelListItem from, ChannelListItem to)
+    {
+        var fromIdx = Lists.IndexOf(from);
+        var toIdx = Lists.IndexOf(to);
+        if (fromIdx < 0 || toIdx < 0 || fromIdx == toIdx) return;
+        Lists.Move(fromIdx, toIdx);
+        _ = SaveListOrderAsync();
+    }
+
+    private async Task SaveListOrderAsync()
+    {
+        var ids = Lists.Select(l => l.Id).ToList();
+        await _db.UpdateListOrderAsync(ids);
     }
 
     private void RemoveVideoIfFiltered(int videoId)
@@ -636,18 +697,37 @@ public class MainViewModel : BaseViewModel
 
         try
         {
-            var allChannels = await _db.GetAllChannelsAsync();
-            if (allChannels.Count == 0)
+            var targetListIds = GetTargetListIdsForRefreshMode();
+            List<Channel> channelsToRefresh;
+            string scopeLabel;
+
+            if (targetListIds == null)
             {
-                StatusMessage = "No channels found across any list.";
+                channelsToRefresh = await _db.GetAllChannelsAsync();
+                scopeLabel = "all lists";
+            }
+            else
+            {
+                if (targetListIds.Count == 0)
+                {
+                    StatusMessage = "No lists in selected scope.";
+                    return;
+                }
+                channelsToRefresh = await _db.GetChannelsForListsAsync(targetListIds);
+                scopeLabel = $"{targetListIds.Count} list(s)";
+            }
+
+            if (channelsToRefresh.Count == 0)
+            {
+                StatusMessage = "No channels found in selected scope.";
                 return;
             }
 
             int count = 0;
-            foreach (var channel in allChannels)
+            foreach (var channel in channelsToRefresh)
             {
                 count++;
-                StatusMessage = $"Refreshing {count}/{allChannels.Count}: {channel.Name}";
+                StatusMessage = $"Refreshing {count}/{channelsToRefresh.Count}: {channel.Name}";
                 try
                 {
                     var videos = await _yt.FetchRecentVideosAsync(channel.YouTubeChannelId, apiKey, maxVideos);
@@ -661,7 +741,7 @@ public class MainViewModel : BaseViewModel
                 }
             }
 
-            StatusMessage = $"Refresh all complete — {allChannels.Count} channel(s) updated";
+            StatusMessage = $"{RefreshAllButtonText[2..]} complete — {channelsToRefresh.Count} channel(s) updated across {scopeLabel}";
             await RefreshChannelCountsAsync();
             await LoadVideosAsync();
         }
@@ -669,6 +749,24 @@ public class MainViewModel : BaseViewModel
         {
             IsBusy = false;
         }
+    }
+
+    private List<int>? GetTargetListIdsForRefreshMode()
+    {
+        if (_refreshMode == RefreshMode.All) return null;
+
+        var listIds = Lists.Select(l => l.Id).ToList();
+        if (listIds.Count == 0) return [];
+
+        return _refreshMode switch
+        {
+            RefreshMode.Top1 => listIds.Take(1).ToList(),
+            RefreshMode.Top2 => listIds.Take(2).ToList(),
+            RefreshMode.Top3 => listIds.Take(3).ToList(),
+            RefreshMode.FirstHalf => listIds.Take((listIds.Count + 1) / 2).ToList(),
+            RefreshMode.SecondHalf => listIds.Skip((listIds.Count + 1) / 2).ToList(),
+            _ => null,
+        };
     }
 
     private async Task LoadFromSubscriptionsAsync()
