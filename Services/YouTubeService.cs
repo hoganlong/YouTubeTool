@@ -8,6 +8,11 @@ namespace YouTubeTool.Services;
 public record ChannelInfo(string YouTubeChannelId, string Name, string? ThumbnailUrl);
 public record VideoInfo(string YouTubeVideoId, string Title, string? ThumbnailUrl, DateTime PublishedAt, bool IsShort = false);
 
+// Thrown when an InnerTube request comes back as logged-out — the session cookies are present
+// but no longer authenticate. Callers can catch this specifically to prompt a fresh sign-in.
+public class YouTubeSessionExpiredException()
+    : Exception("Your YouTube session has expired. Sign in again to continue.");
+
 public class YouTubeService
 {
     public async Task<bool> ValidateApiKeyAsync(string apiKey)
@@ -207,6 +212,9 @@ public class YouTubeService
             try { File.WriteAllText(Path.Combine(logDir, $"yt_subscriptions_p{pageNum}.json"), json); } catch { }
 
             using var doc = System.Text.Json.JsonDocument.Parse(json);
+
+            if (pageNum == 0 && IsLoggedOut(doc.RootElement))
+                throw new YouTubeSessionExpiredException();
 
             // Log which account is active on the first page
             if (pageNum == 0)
@@ -445,6 +453,19 @@ public class YouTubeService
         var allIds = new List<string>();
         string? continuation = null;
 
+        var logDir = Path.Combine(Path.GetTempPath(), "YouTubeToolLogs");
+        try { Directory.CreateDirectory(logDir); } catch { }
+
+        // Dump the cookie NAMES (not values) and onBehalfOfUser so we can tell, when a sync
+        // comes back logged-out, whether the session cookies were even present.
+        try
+        {
+            var diag = $"onBehalfOfUser={onBehalfOfUser ?? "(none)"}\ncookie count={cookies.Count}\nnames:\n  "
+                + string.Join("\n  ", cookies.Keys.OrderBy(k => k));
+            File.WriteAllText(Path.Combine(logDir, "yt_history_cookies.txt"), diag);
+        }
+        catch { }
+
         for (int page = 0; page < maxPages; page++)
         {
             progress?.Report($"Fetching watch history... ({allIds.Count} so far)");
@@ -460,10 +481,17 @@ public class YouTubeService
 
             var json = await resp.Content.ReadAsStringAsync();
 
+            // Save every page response for debugging — without this we have no way to tell
+            // whether a zero-result sync is a sign-in problem or a changed InnerTube structure.
+            try { File.WriteAllText(Path.Combine(logDir, $"yt_history_p{page}.json"), json); } catch { }
+
             if (!resp.IsSuccessStatusCode)
                 throw new Exception($"InnerTube returned HTTP {(int)resp.StatusCode} ({resp.ReasonPhrase}). Check that you are signed in via Settings.");
 
             using var doc = System.Text.Json.JsonDocument.Parse(json);
+
+            if (page == 0 && IsLoggedOut(doc.RootElement))
+                throw new YouTubeSessionExpiredException();
 
             var items = page == 0
                 ? GetInnerTubeInitialItems(doc.RootElement)
@@ -478,6 +506,18 @@ public class YouTubeService
         }
 
         return allIds;
+    }
+
+    // YouTube returns HTTP 200 with a fully-rendered "signed out" feed when the session cookies
+    // are present but no longer authenticate (expired/revoked). responseContext.loggedOut is the
+    // authoritative signal — checking it lets us fail with a clear, recoverable message instead of
+    // silently returning an empty list.
+    private static bool IsLoggedOut(System.Text.Json.JsonElement root)
+    {
+        return root.TryGetProperty("responseContext", out var ctx)
+            && ctx.TryGetProperty("mainAppWebResponseContext", out var webCtx)
+            && webCtx.TryGetProperty("loggedOut", out var loggedOut)
+            && loggedOut.ValueKind == System.Text.Json.JsonValueKind.True;
     }
 
     private static System.Text.Json.JsonElement[] GetInnerTubeInitialItems(System.Text.Json.JsonElement root)

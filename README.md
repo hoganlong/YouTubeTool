@@ -192,7 +192,11 @@ Shorts get:
 If a subscribed channel has been suspended or deleted by YouTube, Refresh and Refresh All will silently skip it (no error shown). The channel remains in your list but will never have new videos.
 
 ### Watch History Sync (Sync Watch History button)
-Google restricts the `watchHistory` playlist API endpoint — it returns empty results even with valid OAuth. The button exists but will always report no results. **Use Google Takeout import instead.**
+Sync Watch History pulls your history via YouTube's InnerTube API using your **browser sign-in session** (not the OAuth `watchHistory` playlist endpoint, which Google restricts and which always returns empty). Sign in once via the WebView2 login window and it works.
+
+**If your session expires:** YouTube returns a logged-out feed (HTTP 200 but `responseContext.loggedOut = true`, with the "Keep track of what you watch" empty state). The cookies are still present on disk, so the app can't tell from their presence alone. The app now detects the logged-out response, automatically prompts you to sign in again, and retries — so a stale session no longer silently reports "no history." You can also re-auth manually any time via **Settings → Switch Account**.
+
+Raw InnerTube responses are saved to `%TEMP%\YouTubeToolLogs\yt_history_p*.json` (and cookie names to `yt_history_cookies.txt`) for debugging.
 
 ### OAuth "Access blocked" error
 If you see "YouTubeTool has not completed the Google verification process":

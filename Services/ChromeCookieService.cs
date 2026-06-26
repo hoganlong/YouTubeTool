@@ -22,6 +22,9 @@ public class ChromeCookieService
     public async Task<Dictionary<string, string>> GetYouTubeCookiesAsync()
     {
         var log = new System.Text.StringBuilder();
+        var logDir = Path.Combine(Path.GetTempPath(), "YouTubeToolLogs");
+        try { Directory.CreateDirectory(logDir); } catch { }
+        var debugPath = Path.Combine(logDir, "yt_cookies_debug.txt");
         foreach (var userDataPath in UserDataPaths)
         {
             log.AppendLine($"Checking: {userDataPath} — exists={Directory.Exists(userDataPath)}");
@@ -32,7 +35,7 @@ public class ChromeCookieService
                 log.AppendLine($"  Got {cookies.Count} cookies. Has SAPISID={cookies.ContainsKey("SAPISID")}");
                 if (cookies.ContainsKey("SAPISID"))
                 {
-                    File.WriteAllText(Path.Combine(Path.GetTempPath(), "yt_cookies_debug.txt"), log.ToString());
+                    File.WriteAllText(debugPath, log.ToString());
                     return cookies;
                 }
             }
@@ -42,7 +45,7 @@ public class ChromeCookieService
             }
         }
 
-        File.WriteAllText(Path.Combine(Path.GetTempPath(), "yt_cookies_debug.txt"), log.ToString());
+        File.WriteAllText(debugPath, log.ToString());
         return [];
     }
 

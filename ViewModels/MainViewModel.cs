@@ -56,6 +56,7 @@ public class MainViewModel : BaseViewModel
     private double _uiScale = 1.0;
     private readonly List<string> _messageHistory = [];
     private RefreshMode _refreshMode = RefreshMode.All;
+    private bool _suppressVideoLoad;
 
     public ObservableCollection<ChannelListItem> Lists { get; } = [];
     public ObservableCollection<ChannelItem> Channels { get; } = [];
@@ -81,7 +82,8 @@ public class MainViewModel : BaseViewModel
                 OnPropertyChanged(nameof(ChannelSortOrder));
                 OnPropertyChanged(nameof(IsChannelSelected));
                 OnPropertyChanged(nameof(HideShorts));
-                _ = LoadVideosAsync();
+                if (!_suppressVideoLoad)
+                    _ = LoadVideosAsync();
             }
         }
     }
@@ -452,9 +454,27 @@ public class MainViewModel : BaseViewModel
         if (SelectedList == null || SelectedChannel == null) return;
         var result = MessageBox.Show($"Remove \"{SelectedChannel.Name}\" from this list?", "Confirm", MessageBoxButton.YesNo);
         if (result != MessageBoxResult.Yes) return;
+
+        var channelName = SelectedChannel.Name;
+        var listName = SelectedList.Name;
+        StatusMessage = $"Removing \"{channelName}\" from \"{listName}\"...";
         await _db.RemoveChannelFromListAsync(SelectedList.Id, SelectedChannel.Id);
-        Channels.Remove(SelectedChannel);
-        SelectedChannel = null;
+
+        _suppressVideoLoad = true;
+        try
+        {
+            Channels.Remove(SelectedChannel);
+            SelectedChannel = null;
+        }
+        finally
+        {
+            _suppressVideoLoad = false;
+        }
+
+        Videos.Clear();
+        OnPropertyChanged(nameof(HasNoVideos));
+        await RefreshChannelCountsAsync();
+        StatusMessage = $"Removed \"{channelName}\" from \"{listName}\".";
     }
 
     private async Task RefreshAsync()
@@ -559,12 +579,28 @@ public class MainViewModel : BaseViewModel
             var knownIds = await _db.GetAllWatchHistoryIdsAsync();
             var progress = new Progress<string>(msg => StatusMessage = msg);
 
-            var onBehalfOf = _webView2Cookies.TryGetOnBehalfOfUser();
-            var allFetchedIds = await _yt.FetchWatchHistoryViaInnerTubeAsync(browserCookies, progress, onBehalfOf);
+            List<string> allFetchedIds;
+            try
+            {
+                var onBehalfOf = _webView2Cookies.TryGetOnBehalfOfUser();
+                allFetchedIds = await _yt.FetchWatchHistoryViaInnerTubeAsync(browserCookies, progress, onBehalfOf);
+            }
+            catch (YouTubeSessionExpiredException)
+            {
+                StatusMessage = "Your YouTube session has expired — please sign in again...";
+                browserCookies = await ForceReSignInAsync();
+                if (browserCookies.Count == 0)
+                {
+                    StatusMessage = "YouTube sign-in cancelled.";
+                    return;
+                }
+                var onBehalfOf = _webView2Cookies.TryGetOnBehalfOfUser();
+                allFetchedIds = await _yt.FetchWatchHistoryViaInnerTubeAsync(browserCookies, progress, onBehalfOf);
+            }
 
             if (allFetchedIds.Count == 0)
             {
-                StatusMessage = "No watch history returned — debug file saved to %TEMP%\\yt_history_debug.json. Check that you are signed in.";
+                StatusMessage = "No watch history returned — debug files saved to %TEMP%\\YouTubeToolLogs\\yt_history_p*.json. Check that you are signed in.";
                 return;
             }
 
@@ -793,8 +829,25 @@ public class MainViewModel : BaseViewModel
             }
 
             var progress = new Progress<string>(msg => StatusMessage = msg);
-            var onBehalfOf = _webView2Cookies.TryGetOnBehalfOfUser();
-            var channels = await _yt.FetchSubscribedChannelsViaInnerTubeAsync(browserCookies, progress, onBehalfOf);
+
+            List<ChannelInfo> channels;
+            try
+            {
+                var onBehalfOf = _webView2Cookies.TryGetOnBehalfOfUser();
+                channels = await _yt.FetchSubscribedChannelsViaInnerTubeAsync(browserCookies, progress, onBehalfOf);
+            }
+            catch (YouTubeSessionExpiredException)
+            {
+                StatusMessage = "Your YouTube session has expired — please sign in again...";
+                browserCookies = await ForceReSignInAsync();
+                if (browserCookies.Count == 0)
+                {
+                    StatusMessage = "YouTube sign-in cancelled.";
+                    return;
+                }
+                var onBehalfOf = _webView2Cookies.TryGetOnBehalfOfUser();
+                channels = await _yt.FetchSubscribedChannelsViaInnerTubeAsync(browserCookies, progress, onBehalfOf);
+            }
 
             if (channels.Count == 0)
             {
@@ -882,6 +935,15 @@ public class MainViewModel : BaseViewModel
     {
         var owner = Application.Current.MainWindow;
         return await _webView2Cookies.GetYouTubeCookiesAsync(owner);
+    }
+
+    // The stored cookies still contain SAPISID after a session expires, so the normal
+    // GetYouTubeCookiesAsync path won't re-prompt on its own. Sign out first to clear them,
+    // then sign in fresh. Returns the new cookies, or empty if the user cancelled.
+    private async Task<Dictionary<string, string>> ForceReSignInAsync()
+    {
+        await _webView2Cookies.SignOutAsync();
+        return await GetYouTubeCookiesAsync();
     }
 
     private static string GetFullMessage(Exception ex)

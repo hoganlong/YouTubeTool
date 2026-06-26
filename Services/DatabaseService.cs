@@ -195,13 +195,9 @@ public class DatabaseService(IDbContextFactory<AppDbContext> factory)
     public async Task RemoveChannelFromListAsync(int listId, int channelId)
     {
         await using var db = await factory.CreateDbContextAsync();
-        var list = await db.ChannelLists.Include(l => l.Channels).FirstAsync(l => l.Id == listId);
-        var channel = list.Channels.FirstOrDefault(c => c.Id == channelId);
-        if (channel != null)
-        {
-            list.Channels.Remove(channel);
-            await db.SaveChangesAsync();
-        }
+        await db.Set<ChannelListChannel>()
+            .Where(j => j.ListsId == listId && j.ChannelsId == channelId)
+            .ExecuteDeleteAsync();
     }
 
     public async Task<List<Video>> GetAllVideosForListAsync(int listId)

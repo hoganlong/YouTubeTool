@@ -1,4 +1,5 @@
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -12,6 +13,13 @@ public partial class App : Application
 {
     private ServiceProvider? _serviceProvider;
 
+    // Telling Windows our explicit AppUserModelID makes the shell associate this process's
+    // taskbar button with our exe's icon deterministically, instead of guessing from window
+    // properties. Without it, the taskbar occasionally shows a blank/default icon — typically
+    // after rebuilds or when the exe path changes between debug and published runs.
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+    private static extern void SetCurrentProcessExplicitAppUserModelID(string AppID);
+
     public static SettingsService SettingsService { get; private set; } = null!;
     public static YouTubeService YouTubeService { get; private set; } = null!;
     public static GoogleAuthService GoogleAuthService { get; private set; } = null!;
@@ -21,6 +29,8 @@ public partial class App : Application
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        try { SetCurrentProcessExplicitAppUserModelID("Hogan.YouTubeTool"); } catch { }
 
         // Catch unhandled exceptions on the UI thread
         DispatcherUnhandledException += (_, args) =>
