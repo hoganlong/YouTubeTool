@@ -147,6 +147,22 @@
             <Setter Property="CaretBrush" Value="White"/>
             <Setter Property="Padding" Value="4,2"/>
         </Style>
+
+        <!-- Per-channel view options. x:Shared="False" is required: a ContextMenu handed out from
+             a resource is a single shared instance by default, so every channel row would share
+             one menu and the check marks would bleed between channels. The DataContext comes from
+             the ListBoxItem the menu is attached to, so each menu edits its own channel. -->
+        <ContextMenu x:Key="ChannelOptionsMenu" x:Shared="False">
+            <MenuItem Header="{Binding Name}" IsEnabled="False"/>
+            <Separator/>
+            <MenuItem Header="Show Shorts" IsCheckable="True"
+                      IsChecked="{Binding ShowShorts, Mode=TwoWay}"/>
+            <MenuItem Header="Show Watched" IsCheckable="True"
+                      IsChecked="{Binding ShowWatched, Mode=TwoWay}"/>
+            <MenuItem Header="Show Member" IsCheckable="True"
+                      IsChecked="{Binding ShowMembersOnly, Mode=TwoWay}"
+                      ToolTip="Show this channel's members-only videos. Refresh will need you signed in to YouTube."/>
+        </ContextMenu>
     </Window.Resources>
 
     <DockPanel>
@@ -325,6 +341,7 @@
                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                          PreviewMouseLeftButtonDown="ChannelListBox_PreviewMouseLeftButtonDown"
                          PreviewMouseMove="ChannelListBox_PreviewMouseMove"
+                         PreviewMouseRightButtonDown="ChannelListBox_PreviewMouseRightButtonDown"
                          Drop="ChannelListBox_Drop">
                     <ListBox.ItemTemplate>
                         <DataTemplate>
@@ -345,6 +362,7 @@
                     </ListBox.ItemTemplate>
                     <ListBox.ItemContainerStyle>
                         <Style TargetType="ListBoxItem">
+                            <Setter Property="ContextMenu" Value="{StaticResource ChannelOptionsMenu}"/>
                             <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
                             <Setter Property="Background" Value="Transparent"/>
                             <Setter Property="Foreground" Value="#CCC"/>
@@ -389,16 +407,6 @@
                                 Command="{Binding SyncWatchHistoryCommand}"
                                 Style="{StaticResource ActionButton}"
                                 Padding="10,3" Margin="6,0,0,0"/>
-<CheckBox DockPanel.Dock="Right" Content="Show Watched"
-                                  IsChecked="{Binding ShowWatched}"
-                                  VerticalAlignment="Center"
-                                  Foreground="#AAA" Margin="6,0,0,0"/>
-                        <CheckBox DockPanel.Dock="Right" Content="Hide Shorts"
-                                  IsChecked="{Binding HideShorts}"
-                                  IsEnabled="{Binding IsChannelSelected}"
-                                  VerticalAlignment="Center"
-                                  Foreground="#AAA" Margin="6,0,0,0"
-                                  ToolTip="Hide Shorts for the selected channel (saved per channel)"/>
                         <ComboBox DockPanel.Dock="Right"
                                   SelectedValue="{Binding ChannelSortOrder}"
                                   SelectedValuePath="Tag"

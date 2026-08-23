@@ -14,12 +14,16 @@ A WPF desktop app (.NET 10, Windows) for managing YouTube channel watchlists. Tr
 - **Load Subscriptions** — import all your YouTube subscriptions via browser sign-in, auto-split into lists of 30 (skips channels already in any list)
 - Videos display oldest-first so you watch in order
 - Mark each video as **Watched**, **Skip** (DontWatch), or **Not Interested** (✕)
-- **Show Watched** toggle to reveal/hide watched videos
-- **Hide Shorts** — per-channel toggle (saved in DB) that hides Shorts in both the video list and unwatched counts
+- **Right-click any channel** for its per-channel view options (all saved in the DB). Each one
+  controls both the video list and the unwatched counts:
+  - **Show Shorts** — on by default; uncheck to hide Shorts for that channel
+  - **Show Watched** — off by default; check to reveal watched videos
+  - **Show Member** — off by default; check to pull in members-only videos (see below)
 - **Mark All Watched** button to bulk-clear a list
 - Channel names are **bold** when they have unwatched videos, and wrap to multiple lines if long
 - Drag channels between lists, or drag lists themselves to reorder — status bar shows live progress during the move
 - Detects **YouTube Shorts** (≤3 min) — shows `(SHORT)` after title, portrait thumbnail
+- Members-only videos show `(MEMBERS)` after the title
 - **Import Takeout** — import your Google Takeout watch-history.json to auto-mark already-watched videos
 - **Sync Watch History** — sign in to YouTube via browser to sync watched videos
 - **Message History** — `?` button on the status bar opens a scrollable log of all status messages with copy support
@@ -141,7 +145,12 @@ YouTubeTool/
     ├── InitialCreate              # Base schema
     ├── AddWatchHistory            # WatchHistory table
     ├── AddIsShort                 # IsShort column on Videos
-    └── AddHideShortsToChannel     # HideShorts column on Channels
+    ├── AddHideShortsToChannel     # HideShorts column on Channels
+    ├── AddChannelViewOptionsAndMembersOnly
+    │                              # ShowWatched + IncludeMembersOnly on Channels,
+    │                              # IsMembersOnly on Videos
+    └── ShowOptionsPerChannel      # HideShorts -> ShowShorts (inverted, preserving behavior),
+                                   # IncludeMembersOnly -> ShowMembersOnly
 ```
 
 ---
@@ -175,6 +184,59 @@ Daily quota is 10,000 units. Refreshing a channel with 50 videos costs ~3 units.
 
 ---
 
+## Members-Only Videos
+
+Members-only videos never appear in a channel's public uploads playlist, so a plain Refresh cannot see
+them no matter what — an API key isn't authenticated as anyone, let alone as a member of that channel.
+Reaching them means using your YouTube browser sign-in.
+
+To pull them in:
+
+1. Right-click the channel → tick **Show Member**
+2. Click **↻ Refresh**
+
+The refresh will use your YouTube browser sign-in (the same WebView2 session as Sync Watch History),
+prompting you to sign in if there's no valid session. Only channels with the option ticked trigger
+this, and the session is read once per refresh no matter how many channels use it.
+
+Once fetched, members-only videos behave like any other video — sorted by publish date, markable as
+Watched/Skip/Not Interested — and are labelled `(MEMBERS)`. Unticking the option hides them again
+without deleting them.
+
+### The early-access case (the common one)
+
+Many creators post a video to members first and make it public a day or so later. During that window
+the video is missing from the app entirely, which is the main reason to turn this on.
+
+Two things follow from that:
+
+- **A refresh has to run while the video is still members-only.** If the creator releases it publicly
+  before you refresh, it simply arrives as a normal video.
+- **Nothing is duplicated when it goes public.** The ordinary refresh re-imports it with the
+  members-only flag cleared, so it moves into your normal list on its own.
+
+### How it decides what's members-only
+
+The app reads the channel's **Videos, Shorts and Live** tabs and flags a video when either:
+
+- it carries a **members-only badge** — YouTube shows this to people who *aren't* members, as a prompt
+  to join; or
+- it's **missing from the public uploads playlist** — which is how members-only early access looks on a
+  channel you *are* a member of, where no badge is shown at all.
+
+The second test ignores anything older than the oldest video the normal Refresh fetched (beyond that
+depth the two lists just cover different ranges), and ignores premieres and scheduled live streams.
+
+**Costs:** 1 extra quota unit per 50 members-only videos (a `videos.list` call for real publish dates
+and durations).
+
+**If nothing comes back:** most likely the channel has no members-only videos right now — a preview may
+already have gone public, or the membership's perks may not include videos at all. Check
+`%TEMP%\YouTubeToolLogs\yt_members_summary.txt`, which records each tab scanned, how many videos were
+checked, and how many candidates were dropped and why.
+
+---
+
 ## YouTube Shorts Detection
 
 Shorts are detected by calling `videos.list` with `contentDetails` to get each video's duration. Any video ≤ 180 seconds (3 minutes) is treated as a Short.
@@ -190,6 +252,11 @@ Shorts get:
 
 ### Suspended or deleted channels
 If a subscribed channel has been suspended or deleted by YouTube, Refresh and Refresh All will silently skip it (no error shown). The channel remains in your list but will never have new videos.
+
+### Members-only videos and the 400-video limit
+`MaxVideosPerChannel` caps how far back each Refresh reads. On a channel with more videos than that,
+the older ones are never fetched — and the members-only check deliberately ignores anything older than
+that cutoff, because past it the app can't tell "members-only" from "not fetched yet."
 
 ### Watch History Sync (Sync Watch History button)
 Sync Watch History pulls your history via YouTube's InnerTube API using your **browser sign-in session** (not the OAuth `watchHistory` playlist endpoint, which Google restricts and which always returns empty). Sign in once via the WebView2 login window and it works.

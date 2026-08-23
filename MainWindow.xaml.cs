@@ -64,6 +64,14 @@ public partial class MainWindow : Window
         _draggedChannel = null;
     }
 
+    // Right-click opens that row's options menu, but WPF wouldn't otherwise change the selection —
+    // leaving the videos pane showing a different channel than the menu is editing. Select first.
+    private void ChannelListBox_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        var item = FindAncestor<ListBoxItem>((DependencyObject)e.OriginalSource);
+        if (item != null) item.IsSelected = true;
+    }
+
     private void ChannelListBox_PreviewMouseMove(object sender, MouseEventArgs e)
     {
         if (e.LeftButton != MouseButtonState.Pressed) return;

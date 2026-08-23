@@ -23,6 +23,7 @@ public class Video
     public DateTime PublishedAt { get; set; }
     public VideoStatus Status { get; set; } = VideoStatus.Unwatched;
     public bool IsShort { get; set; }
+    public bool IsMembersOnly { get; set; }
     public bool IsStarred { get; set; }
     public int ChannelId { get; set; }
     public Channel Channel { get; set; } = null!;

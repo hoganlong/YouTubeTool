@@ -19,7 +19,9 @@ public class VideoViewModel : BaseViewModel
     public DateTime PublishedAt { get; }
     public string ChannelName { get; }
     public bool IsShort { get; }
-    public string DisplayTitle => IsShort ? $"{Title} (SHORT)" : Title;
+    public bool IsMembersOnly { get; }
+    public string DisplayTitle =>
+        Title + (IsShort ? " (SHORT)" : "") + (IsMembersOnly ? " (MEMBERS)" : "");
     public string Url => $"https://www.youtube.com/watch?v={YouTubeVideoId}";
 
     public VideoStatus Status
@@ -50,6 +52,7 @@ public class VideoViewModel : BaseViewModel
         PublishedAt = video.PublishedAt;
         ChannelName = video.Channel?.Name ?? string.Empty;
         IsShort = video.IsShort;
+        IsMembersOnly = video.IsMembersOnly;
         _status = video.Status;
         _isStarred = video.IsStarred;
         _db = db;

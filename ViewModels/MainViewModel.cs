@@ -21,16 +21,58 @@ public class ChannelListItem : BaseViewModel
 
 public class ChannelItem : BaseViewModel
 {
+    private readonly DatabaseService _db;
+    // Raised after a view option is persisted so the videos pane and the unwatched counts
+    // can be rebuilt — the toggles change what's visible, not just what's stored.
+    private readonly Func<ChannelItem, Task> _onOptionsChanged;
     private int _unwatchedCount;
+    private bool _showShorts;
+    private bool _showWatched;
+    private bool _showMembersOnly;
+
     public int Id { get; }
     public string Name { get; }
     public string YouTubeChannelId { get; }
     public VideoSortOrder SortOrder { get; set; }
-    public bool HideShorts { get; set; }
     public int UnwatchedCount { get => _unwatchedCount; set => SetProperty(ref _unwatchedCount, value); }
     public string DisplayName => UnwatchedCount > 0 ? $"{Name} ({UnwatchedCount})" : Name;
 
-    public ChannelItem(Channel channel) { Id = channel.Id; Name = channel.Name; YouTubeChannelId = channel.YouTubeChannelId; SortOrder = channel.VideoSortOrder; HideShorts = channel.HideShorts; }
+    public bool ShowShorts
+    {
+        get => _showShorts;
+        set { if (SetProperty(ref _showShorts, value)) _ = ApplyAsync(_db.UpdateChannelShowShortsAsync(Id, value)); }
+    }
+
+    public bool ShowWatched
+    {
+        get => _showWatched;
+        set { if (SetProperty(ref _showWatched, value)) _ = ApplyAsync(_db.UpdateChannelShowWatchedAsync(Id, value)); }
+    }
+
+    public bool ShowMembersOnly
+    {
+        get => _showMembersOnly;
+        set { if (SetProperty(ref _showMembersOnly, value)) _ = ApplyAsync(_db.UpdateChannelShowMembersOnlyAsync(Id, value)); }
+    }
+
+    public ChannelItem(Channel channel, DatabaseService db, Func<ChannelItem, Task> onOptionsChanged)
+    {
+        Id = channel.Id;
+        Name = channel.Name;
+        YouTubeChannelId = channel.YouTubeChannelId;
+        SortOrder = channel.VideoSortOrder;
+        _showShorts = channel.ShowShorts;
+        _showWatched = channel.ShowWatched;
+        _showMembersOnly = channel.ShowMembersOnly;
+        _db = db;
+        _onOptionsChanged = onOptionsChanged;
+    }
+
+    private async Task ApplyAsync(Task save)
+    {
+        await save;
+        await _onOptionsChanged(this);
+    }
 
     public void RefreshDisplayName() => OnPropertyChanged(nameof(DisplayName));
 }
@@ -50,7 +92,6 @@ public class MainViewModel : BaseViewModel
     private ChannelListItem? _selectedList;
     private ChannelItem? _selectedChannel;
     private bool _isBusy;
-    private bool _showWatched;
     private string _statusMessage = "Ready";
     private string _addChannelText = string.Empty;
     private double _uiScale = 1.0;
@@ -81,7 +122,6 @@ public class MainViewModel : BaseViewModel
             {
                 OnPropertyChanged(nameof(ChannelSortOrder));
                 OnPropertyChanged(nameof(IsChannelSelected));
-                OnPropertyChanged(nameof(HideShorts));
                 if (!_suppressVideoLoad)
                     _ = LoadVideosAsync();
             }
@@ -105,30 +145,17 @@ public class MainViewModel : BaseViewModel
 
     public bool IsBusy { get => _isBusy; set => SetProperty(ref _isBusy, value); }
     public bool HasNoVideos => Videos.Count == 0 && SelectedList != null;
-    public bool ShowWatched
-    {
-        get => _showWatched;
-        set { if (SetProperty(ref _showWatched, value)) _ = LoadVideosAsync(); }
-    }
-    public bool HideShorts
-    {
-        get => _selectedChannel?.HideShorts ?? false;
-        set
-        {
-            if (_selectedChannel == null || _selectedChannel.HideShorts == value) return;
-            _selectedChannel.HideShorts = value;
-            OnPropertyChanged();
-            _ = SaveHideShortsAndRefreshAsync();
-        }
-    }
 
-    private async Task SaveHideShortsAndRefreshAsync()
+    // Called by ChannelItem after one of its right-click view options is saved. Only the
+    // selected channel's videos are on screen, so a reload is needed only for that one —
+    // but the counts shift for whichever channel changed.
+    private async Task OnChannelOptionsChangedAsync(ChannelItem channel)
     {
-        if (_selectedChannel == null) return;
-        await _db.UpdateChannelHideShortsAsync(_selectedChannel.Id, _selectedChannel.HideShorts);
-        await LoadVideosAsync();
+        if (ReferenceEquals(channel, SelectedChannel))
+            await LoadVideosAsync();
         await RefreshChannelCountsAsync();
     }
+
     public string StatusMessage
     {
         get => _statusMessage;
@@ -240,7 +267,7 @@ public class MainViewModel : BaseViewModel
 
         var channels = await _db.GetChannelsForListAsync(SelectedList.Id);
         foreach (var c in channels)
-            Channels.Add(new ChannelItem(c));
+            Channels.Add(new ChannelItem(c, _db, OnChannelOptionsChangedAsync));
 
         StatusMessage = "Counting unwatched videos...";
         await RefreshChannelCountsAsync();
@@ -290,20 +317,16 @@ public class MainViewModel : BaseViewModel
         var context = SelectedChannel != null ? $"\"{SelectedChannel.Name}\"" : $"\"{SelectedList.Name}\"";
         StatusMessage = $"Loading videos for {context}...";
 
+        // Show Watched is a per-channel option now, so the whole-list view (no channel selected)
+        // has no toggle to read and always shows unwatched only.
         var sortOrder = SelectedChannel?.SortOrder ?? VideoSortOrder.OldestFirst;
         List<Video> videos;
-        if (ShowWatched)
-        {
-            videos = SelectedChannel != null
-                ? await _db.GetAllVideosForChannelAsync(SelectedChannel.Id, sortOrder)
-                : await _db.GetAllVideosForListAsync(SelectedList.Id);
-        }
+        if (SelectedChannel == null)
+            videos = await _db.GetUnwatchedVideosForListAsync(SelectedList.Id);
+        else if (SelectedChannel.ShowWatched)
+            videos = await _db.GetAllVideosForChannelAsync(SelectedChannel.Id, sortOrder);
         else
-        {
-            videos = SelectedChannel != null
-                ? await _db.GetUnwatchedVideosForChannelAsync(SelectedChannel.Id, sortOrder)
-                : await _db.GetUnwatchedVideosForListAsync(SelectedList.Id);
-        }
+            videos = await _db.GetUnwatchedVideosForChannelAsync(SelectedChannel.Id, sortOrder);
 
         foreach (var v in videos)
             Videos.Add(new VideoViewModel(v, _db, () => RemoveVideoIfFiltered(v.Id)));
@@ -376,7 +399,7 @@ public class MainViewModel : BaseViewModel
             return;
         }
 
-        if (!ShowWatched)
+        if (SelectedChannel?.ShowWatched != true)
         {
             Videos.Remove(vm);
             _ = RefreshChannelCountsAsync();
@@ -435,7 +458,7 @@ public class MainViewModel : BaseViewModel
             var info = await _yt.FetchChannelInfoAsync(AddChannelText.Trim(), apiKey);
             var channel = await _db.AddChannelToListAsync(SelectedList.Id, info);
             if (!Channels.Any(c => c.Id == channel.Id))
-                Channels.Add(new ChannelItem(channel));
+                Channels.Add(new ChannelItem(channel, _db, OnChannelOptionsChangedAsync));
             AddChannelText = string.Empty;
             StatusMessage = $"Added: {info.Name}";
         }
@@ -490,29 +513,13 @@ public class MainViewModel : BaseViewModel
 
         IsBusy = true;
         var maxVideos = _settings.LoadSettings().MaxVideosPerChannel;
-        int count = 0;
 
         try
         {
             var channels = await _db.GetChannelsForListAsync(SelectedList.Id);
-            foreach (var channel in channels)
-            {
-                count++;
-                StatusMessage = $"Fetching {count}/{channels.Count}: {channel.Name}";
-                try
-                {
-                    var videos = await _yt.FetchRecentVideosAsync(channel.YouTubeChannelId, apiKey, maxVideos);
-                    await _db.UpsertVideosAsync(channel.Id, videos);
-                    await _db.UpdateChannelLastFetchedAsync(channel.Id);
-                }
-                catch (Exception ex)
-                {
-                    StatusMessage = $"Error on {channel.Name}: {GetFullMessage(ex)}";
-                    await Task.Delay(1000);
-                }
-            }
+            var memberVideos = await FetchChannelsAsync(channels, apiKey, maxVideos, "Fetching");
 
-            StatusMessage = $"Refresh complete — {channels.Count} channel(s) updated";
+            StatusMessage = $"Refresh complete — {channels.Count} channel(s) updated{MemberSuffix(memberVideos)}";
             await RefreshChannelCountsAsync();
             await LoadVideosAsync();
         }
@@ -521,6 +528,97 @@ public class MainViewModel : BaseViewModel
             IsBusy = false;
         }
     }
+
+    // Shared by Refresh and Refresh All: pulls each channel's uploads via the Data API, then —
+    // for channels with Member Content enabled — its members-only videos via InnerTube.
+    // Returns the number of members-only videos fetched so the caller can report it.
+    private async Task<int> FetchChannelsAsync(List<Channel> channels, string apiKey, int maxVideos, string verb)
+    {
+        // Reading the session spins up a hidden WebView2 and loads youtube.com, so it happens at
+        // most once per refresh, and only once a channel actually asks for member content.
+        Dictionary<string, string>? memberCookies = null;
+        bool memberSessionUnavailable = false;
+        int memberVideos = 0;
+        int count = 0;
+
+        foreach (var channel in channels)
+        {
+            count++;
+            StatusMessage = $"{verb} {count}/{channels.Count}: {channel.Name}";
+
+            // Kept in scope: the members-only pass identifies early-access videos by which IDs the
+            // public fetch did NOT return, so it needs this exact result set.
+            List<VideoInfo> publicVideos = [];
+            try
+            {
+                publicVideos = await _yt.FetchRecentVideosAsync(channel.YouTubeChannelId, apiKey, maxVideos);
+                await _db.UpsertVideosAsync(channel.Id, publicVideos);
+                await _db.UpdateChannelLastFetchedAsync(channel.Id);
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"Error on {channel.Name}: {GetFullMessage(ex)}";
+                await Task.Delay(1000);
+            }
+
+            if (!channel.ShowMembersOnly || memberSessionUnavailable) continue;
+
+            try
+            {
+                memberCookies ??= await GetYouTubeCookiesAsync();
+                if (memberCookies.Count == 0)
+                {
+                    memberSessionUnavailable = true;
+                    StatusMessage = "Not signed in — skipping members-only videos for this refresh.";
+                    await Task.Delay(1500);
+                    continue;
+                }
+
+                try
+                {
+                    memberVideos += await FetchMemberVideosAsync(channel, memberCookies, apiKey, maxVideos, publicVideos);
+                }
+                catch (YouTubeSessionExpiredException)
+                {
+                    StatusMessage = "Your YouTube session has expired — please sign in again...";
+                    memberCookies = await ForceReSignInAsync();
+                    if (memberCookies.Count == 0)
+                    {
+                        memberSessionUnavailable = true;
+                        StatusMessage = "Sign-in cancelled — skipping members-only videos for this refresh.";
+                        await Task.Delay(1500);
+                        continue;
+                    }
+                    memberVideos += await FetchMemberVideosAsync(channel, memberCookies, apiKey, maxVideos, publicVideos);
+                }
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"Members-only fetch failed for {channel.Name}: {GetFullMessage(ex)}";
+                await Task.Delay(1000);
+            }
+        }
+
+        return memberVideos;
+    }
+
+    private async Task<int> FetchMemberVideosAsync(
+        Channel channel, Dictionary<string, string> cookies, string apiKey, int maxVideos, List<VideoInfo> publicVideos)
+    {
+        var onBehalfOf = _webView2Cookies.TryGetOnBehalfOfUser();
+        var progress = new Progress<string>(msg => StatusMessage = $"{channel.Name}: {msg}");
+        var publicIds = publicVideos.Select(v => v.YouTubeVideoId).ToHashSet(StringComparer.Ordinal);
+        DateTime? oldestPublic = publicVideos.Count > 0 ? publicVideos.Min(v => v.PublishedAt) : null;
+
+        var videos = await _yt.FetchMembersOnlyVideosAsync(
+            channel.YouTubeChannelId, cookies, apiKey, publicIds, oldestPublic, progress, onBehalfOf, maxVideos);
+        if (videos.Count > 0)
+            await _db.UpsertVideosAsync(channel.Id, videos);
+        return videos.Count;
+    }
+
+    private static string MemberSuffix(int memberVideos) =>
+        memberVideos > 0 ? $", {memberVideos} members-only" : "";
 
     private async Task ImportTakeoutAsync()
     {
@@ -769,25 +867,9 @@ public class MainViewModel : BaseViewModel
                 return;
             }
 
-            int count = 0;
-            foreach (var channel in channelsToRefresh)
-            {
-                count++;
-                StatusMessage = $"Refreshing {count}/{channelsToRefresh.Count}: {channel.Name}";
-                try
-                {
-                    var videos = await _yt.FetchRecentVideosAsync(channel.YouTubeChannelId, apiKey, maxVideos);
-                    await _db.UpsertVideosAsync(channel.Id, videos);
-                    await _db.UpdateChannelLastFetchedAsync(channel.Id);
-                }
-                catch (Exception ex)
-                {
-                    StatusMessage = $"Error on {channel.Name}: {GetFullMessage(ex)}";
-                    await Task.Delay(1000);
-                }
-            }
+            var memberVideos = await FetchChannelsAsync(channelsToRefresh, apiKey, maxVideos, "Refreshing");
 
-            StatusMessage = $"{RefreshAllButtonText[2..]} complete — {channelsToRefresh.Count} channel(s) updated across {scopeLabel}";
+            StatusMessage = $"{RefreshAllButtonText[2..]} complete — {channelsToRefresh.Count} channel(s) updated across {scopeLabel}{MemberSuffix(memberVideos)}";
             await RefreshChannelCountsAsync();
             await LoadVideosAsync();
         }

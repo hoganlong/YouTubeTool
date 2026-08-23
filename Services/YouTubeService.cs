@@ -6,7 +6,7 @@ using GoogleYT = Google.Apis.YouTube.v3;
 namespace YouTubeTool.Services;
 
 public record ChannelInfo(string YouTubeChannelId, string Name, string? ThumbnailUrl);
-public record VideoInfo(string YouTubeVideoId, string Title, string? ThumbnailUrl, DateTime PublishedAt, bool IsShort = false);
+public record VideoInfo(string YouTubeVideoId, string Title, string? ThumbnailUrl, DateTime PublishedAt, bool IsShort = false, bool IsMembersOnly = false);
 
 // Thrown when an InnerTube request comes back as logged-out — the session cookies are present
 // but no longer authenticate. Callers can catch this specifically to prompt a fresh sign-in.
@@ -160,6 +160,481 @@ public class YouTubeService
         }
 
         return shortIds;
+    }
+
+    // Members-only videos are invisible to the Data API: they never appear in a channel's public
+    // uploads playlist (UU...), and an API key isn't authenticated as anyone, let alone as a member.
+    // Reaching them means going through InnerTube with the WebView2 session, like Sync Watch History.
+    //
+    // They are NOT in a separate system playlist. A "UUMO"/"UUMF" members-only playlist is a
+    // plausible-sounding guess that does not exist: YouTube answers HTTP 200 with
+    // alerts[].alertRenderer "The playlist does not exist." They are listed inline with the ordinary
+    // videos on the channel's **Videos tab**, which is what this reads.
+    //
+    // TWO signals are needed, because the badge alone misses the case this feature exists for.
+    //
+    //   1. An explicit badge (BADGE_MEMBERS_ONLY / "Members only") on the entry. Reliable, but
+    //      observed only on channels the viewer is NOT a member of — it's the join prompt.
+    //   2. Present in the authenticated tab but ABSENT from the public uploads playlist. This is
+    //      what catches members-only *early access*: the creator posts a video to members first and
+    //      releases it publicly a day or so later. During that window it is visible to a member and
+    //      missing from the uploads playlist the API key sees — which is exactly the case that
+    //      prompted this feature (an Ambition Strikes preview, public again ~2 hours later).
+    //
+    // Signal 2 needs two guards, or it mislabels a channel's back catalogue:
+    //
+    //   * A date floor. MaxVideosPerChannel caps the public fetch (400 here) while the tab walk goes
+    //     deeper, so anything older than the oldest video the public fetch returned is simply out of
+    //     range, not members-only. Within [oldestPublicDate, now] the public fetch IS exhaustive for
+    //     public videos — newest-first pagination guarantees no gaps — so absence in that window is
+    //     meaningful. Without this guard, 23 and 79 five-year-old public videos got flagged on two
+    //     test channels.
+    //   * Skip premieres and live broadcasts. They appear in the tab before entering the uploads
+    //     playlist, so they'd look identical to early access.
+    //
+    // Signal 2 is skipped entirely when the public fetch returned nothing, since "absent from an
+    // empty set" would flag every video on the channel.
+    //
+    // Once the creator makes the video public, the ordinary refresh re-upserts it with
+    // IsMembersOnly=false, so the flag clears itself without special handling.
+    //
+    // InnerTube gives IDs, titles and thumbnails but only a relative date ("3 weeks ago"), useless
+    // for the oldest-first ordering the app is built around. So results are enriched through the
+    // Data API's videos.list (1 unit per 50) for the real publishedAt and the duration for Shorts
+    // detection — that works with a plain API key because members-only videos are publicly *listed*,
+    // just not publicly *playable*. Anything videos.list won't return falls back to the InnerTube
+    // title/thumbnail and a date approximated from the relative text.
+    public async Task<List<VideoInfo>> FetchMembersOnlyVideosAsync(
+        string ytChannelId,
+        Dictionary<string, string> cookies,
+        string apiKey,
+        IReadOnlyCollection<string> publicVideoIds,
+        DateTime? oldestPublicDate,
+        IProgress<string>? progress = null,
+        string? onBehalfOfUser = null,
+        int maxVideos = 50)
+    {
+        if (!ytChannelId.StartsWith("UC", StringComparison.Ordinal))
+            return [];
+
+        if (!cookies.TryGetValue("SAPISID", out var sapisid))
+            throw new Exception("YouTube session not found. Sign in to YouTube to fetch members-only videos.");
+
+        using var http = new System.Net.Http.HttpClient();
+        http.DefaultRequestHeaders.Add("Cookie", string.Join("; ", cookies.Select(kv => $"{kv.Key}={kv.Value}")));
+        http.DefaultRequestHeaders.Add("Authorization", ChromeCookieService.BuildSapiSidHash(sapisid));
+        http.DefaultRequestHeaders.Add("X-Origin", "https://www.youtube.com");
+        http.DefaultRequestHeaders.Add("Origin", "https://www.youtube.com");
+        http.DefaultRequestHeaders.Add("User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+
+        var userContext = onBehalfOfUser != null
+            ? $$$"""{"onBehalfOfUser":"{{{onBehalfOfUser}}}"}"""
+            : "{}";
+        var context = $$$"""{"client":{"clientName":"WEB","clientVersion":"2.20240101.00.00","hl":"en","gl":"US"},"user":{{{userContext}}}}""";
+
+        var logDir = Path.Combine(Path.GetTempPath(), "YouTubeToolLogs");
+        try { Directory.CreateDirectory(logDir); } catch { }
+
+        // A channel splits its uploads across separate tabs, and members-only content can sit in any
+        // of them — measured on one channel: 3 markers in Videos and 15 in Shorts. Reading only the
+        // Videos tab silently missed all of the latter. These params values are YouTube's fixed
+        // per-tab identifiers.
+        var tabs = new (string Name, string Params)[]
+        {
+            ("videos",  "EgZ2aWRlb3PyBgQKAjoA"),
+            ("shorts",  "EgZzaG9ydHPyBgUKA5oBAA%3D%3D"),
+            ("streams", "EgdzdHJlYW1z8gYECgJ6AA%3D%3D"),
+        };
+
+        var publicIds = publicVideoIds as HashSet<string>
+            ?? new HashSet<string>(publicVideoIds, StringComparer.Ordinal);
+        var useDiff = publicIds.Count > 0;
+
+        var raw = new List<RawMemberVideo>();
+        var seenAcrossTabs = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var tab in tabs)
+        {
+            var body = $$"""{"browseId":"{{ytChannelId}}","params":"{{tab.Params}}","context":{{context}}}""";
+            var fromTab = await RunMemberStrategyAsync(
+                http, context, logDir, ytChannelId, tab.Name, body, publicIds, useDiff, maxVideos, progress);
+
+            foreach (var v in fromTab)
+                if (seenAcrossTabs.Add(v.Id))
+                    raw.Add(v);
+        }
+
+        if (raw.Count == 0) return [];
+
+        var trimmed = raw.Take(maxVideos).ToList();
+
+        // Enrich with real publish dates + durations. If the API key is missing or the call fails,
+        // fall back to InnerTube data rather than losing the videos entirely.
+        Dictionary<string, VideoDetails> details = [];
+        if (!string.IsNullOrWhiteSpace(apiKey))
+        {
+            try
+            {
+                using var svc = BuildService(apiKey);
+                details = await FetchVideoDetailsAsync(svc, trimmed.Select(v => v.Id));
+            }
+            catch { /* fall back to InnerTube data below */ }
+        }
+
+        var result = new List<VideoInfo>();
+        int droppedOld = 0, droppedUpcoming = 0;
+
+        foreach (var v in trimmed)
+        {
+            details.TryGetValue(v.Id, out var d);
+
+            // A badge is proof on its own. A diff hit is only meaningful inside the window the
+            // public fetch actually covered, and only for something already published.
+            if (!v.Badged)
+            {
+                var published = d?.Published ?? v.ApproxPublished;
+                if (oldestPublicDate.HasValue && published < oldestPublicDate.Value)
+                {
+                    droppedOld++;
+                    continue;
+                }
+                if (d != null && !string.Equals(d.LiveState, "none", StringComparison.OrdinalIgnoreCase))
+                {
+                    droppedUpcoming++;
+                    continue;
+                }
+            }
+
+            result.Add(d != null
+                ? new VideoInfo(
+                    v.Id,
+                    d.Title,
+                    d.IsShort ? $"https://i.ytimg.com/vi/{v.Id}/oar2.jpg" : d.Thumb ?? v.ThumbnailUrl,
+                    d.Published,
+                    d.IsShort,
+                    IsMembersOnly: true)
+                : new VideoInfo(v.Id, v.Title, v.ThumbnailUrl, v.ApproxPublished, IsShort: false, IsMembersOnly: true));
+        }
+
+        LogMemberAttempt(logDir, ytChannelId, "result", 0,
+            $"{result.Count} kept ({result.Count(r => trimmed.First(t => t.Id == r.YouTubeVideoId).Badged)} badged), " +
+            $"dropped {droppedOld} older than public fetch, {droppedUpcoming} upcoming/live");
+        return result;
+    }
+
+    private sealed record VideoDetails(string Title, string? Thumb, DateTime Published, bool IsShort, string LiveState);
+
+    // Badged = carried an explicit members-only badge (proof on its own). Otherwise it was found by
+    // absence from the public uploads set, which only holds inside the fetched date window.
+    private record RawMemberVideo(string Id, string Title, string? ThumbnailUrl, DateTime ApproxPublished, bool Badged);
+
+    private static async Task<Dictionary<string, VideoDetails>> FetchVideoDetailsAsync(
+        GoogleYT.YouTubeService svc, IEnumerable<string> videoIds)
+    {
+        var result = new Dictionary<string, VideoDetails>(StringComparer.Ordinal);
+        var idList = videoIds.ToList();
+
+        for (int i = 0; i < idList.Count; i += 50)
+        {
+            var req = svc.Videos.List("snippet,contentDetails");
+            req.Id = string.Join(",", idList.Skip(i).Take(50));
+            req.MaxResults = 50;
+            var resp = await req.ExecuteAsync();
+
+            foreach (var video in resp.Items ?? [])
+            {
+                if (video.Id == null) continue;
+
+                bool isShort = false;
+                var duration = video.ContentDetails?.Duration;
+                if (duration != null)
+                {
+                    try { isShort = System.Xml.XmlConvert.ToTimeSpan(duration).TotalSeconds <= 180; }
+                    catch { /* skip unparseable durations */ }
+                }
+
+                result[video.Id] = new VideoDetails(
+                    video.Snippet?.Title ?? "(no title)",
+                    video.Snippet?.Thumbnails?.Medium?.Url ?? video.Snippet?.Thumbnails?.Default__?.Url,
+                    video.Snippet?.PublishedAtDateTimeOffset?.UtcDateTime ?? DateTime.UtcNow,
+                    isShort,
+                    video.Snippet?.LiveBroadcastContent ?? "none");
+            }
+        }
+
+        return result;
+    }
+
+    // Walks one channel tab, following continuations, collecting badged members-only entries.
+    // Returns empty rather than throwing when that tab has none (or doesn't exist).
+    private static async Task<List<RawMemberVideo>> RunMemberStrategyAsync(
+        System.Net.Http.HttpClient http,
+        string context,
+        string logDir,
+        string ytChannelId,
+        string tabName,
+        string initialBody,
+        HashSet<string> publicIds,
+        bool useDiff,
+        int maxVideos,
+        IProgress<string>? progress)
+    {
+        var found = new List<RawMemberVideo>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        // Paging is driven by how many videos we've *scanned*, not how many members-only ones we
+        // found: a page of entirely public videos is normal and must not stop the walk. Scanning to
+        // maxVideos keeps this pass the same depth as the regular uploads fetch.
+        var scanned = new HashSet<string>(StringComparer.Ordinal);
+        string? continuation = null;
+        int page = 0;
+
+        while (scanned.Count < maxVideos && page < 20)
+        {
+            progress?.Report($"Scanning {tabName} for members-only... ({scanned.Count} checked, {found.Count} found)");
+
+            var bodyJson = continuation == null
+                ? initialBody
+                : $$"""{"continuation":"{{continuation}}","context":{{context}}}""";
+
+            using var httpContent = new System.Net.Http.StringContent(
+                bodyJson, System.Text.Encoding.UTF8, "application/json");
+            var resp = await http.PostAsync("https://www.youtube.com/youtubei/v1/browse", httpContent);
+            var json = await resp.Content.ReadAsStringAsync();
+
+            // Only page 0 is kept: these responses run to megabytes each, and a dozen of them per
+            // channel per refresh is a lot of disk churn for diagnostics we rarely need past the
+            // first page. The per-page summary line below covers the rest.
+            if (page == 0)
+                try { File.WriteAllText(Path.Combine(logDir, $"yt_members_{ytChannelId}_{tabName}_p0.json"), json); } catch { }
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                LogMemberAttempt(logDir, ytChannelId, tabName, page, $"HTTP {(int)resp.StatusCode}");
+                return [];
+            }
+
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+
+            if (page == 0 && IsLoggedOut(doc.RootElement))
+                throw new YouTubeSessionExpiredException();
+
+            // Errors arrive as HTTP 200 with an alerts[] array, not a 404 — this is the check that
+            // actually catches "this channel has no such tab".
+            var alert = GetAlertError(doc.RootElement);
+            if (alert != null)
+            {
+                LogMemberAttempt(logDir, ytChannelId, tabName, page, $"alert: {alert}");
+                return [];
+            }
+
+            var scannedBefore = scanned.Count;
+            CollectVideos(doc.RootElement, found, seen, scanned, publicIds, useDiff);
+            var newlyScanned = scanned.Count - scannedBefore;
+
+            continuation = FindContinuationToken(doc.RootElement);
+            LogMemberAttempt(logDir, ytChannelId, tabName, page,
+                $"scanned {newlyScanned} video(s), {found.Count} candidate(s) so far, " +
+                $"continuation={(continuation != null ? "yes" : "no")}");
+
+            page++;
+            if (continuation == null || newlyScanned == 0) break;
+        }
+
+        return found;
+    }
+
+    private static void LogMemberAttempt(string logDir, string ytChannelId, string strategy, int page, string outcome)
+    {
+        try
+        {
+            File.AppendAllText(Path.Combine(logDir, "yt_members_summary.txt"),
+                $"[{DateTime.Now:HH:mm:ss}] {ytChannelId} {strategy} p{page}: {outcome}\n");
+        }
+        catch { }
+    }
+
+    // "The playlist does not exist." and friends arrive as a 200 with an alerts[] array.
+    private static string? GetAlertError(System.Text.Json.JsonElement root)
+    {
+        if (!root.TryGetProperty("alerts", out var alerts) ||
+            alerts.ValueKind != System.Text.Json.JsonValueKind.Array) return null;
+
+        foreach (var a in alerts.EnumerateArray())
+        {
+            if (!a.TryGetProperty("alertRenderer", out var ar)) continue;
+            if (!ar.TryGetProperty("type", out var t) ||
+                !string.Equals(t.GetString(), "ERROR", StringComparison.OrdinalIgnoreCase)) continue;
+            if (ar.TryGetProperty("text", out var txt)) return ReadText(txt) ?? "unknown error";
+        }
+        return null;
+    }
+
+    // A channel's Videos tab returns entries as videoRenderer, gridVideoRenderer or the newer
+    // lockupViewModel depending on how far YouTube's rollout has reached, and the surrounding
+    // wrappers change too. Walking the whole response for anything video-shaped is far more durable
+    // than hard-coding paths, and costs nothing at these response sizes.
+    private static void CollectVideos(
+        System.Text.Json.JsonElement el,
+        List<RawMemberVideo> into,
+        HashSet<string> seen,
+        HashSet<string> scanned,
+        HashSet<string> publicIds,
+        bool useDiff)
+    {
+        if (scanned.Count >= 2000) return; // safety valve against a pathological response
+
+        if (el.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            foreach (var child in el.EnumerateArray())
+                CollectVideos(child, into, seen, scanned, publicIds, useDiff);
+            return;
+        }
+
+        if (el.ValueKind != System.Text.Json.JsonValueKind.Object) return;
+
+        foreach (var name in new[] { "playlistVideoRenderer", "videoRenderer", "gridVideoRenderer", "lockupViewModel" })
+        {
+            if (!el.TryGetProperty(name, out var renderer)) continue;
+            TryAddVideo(renderer, into, seen, scanned, publicIds, useDiff);
+            return; // a video renderer holds no nested videos
+        }
+
+        foreach (var prop in el.EnumerateObject())
+            CollectVideos(prop.Value, into, seen, scanned, publicIds, useDiff);
+    }
+
+    private static void TryAddVideo(
+        System.Text.Json.JsonElement r,
+        List<RawMemberVideo> into,
+        HashSet<string> seen,
+        HashSet<string> scanned,
+        HashSet<string> publicIds,
+        bool useDiff)
+    {
+        // videoRenderer family uses videoId; lockupViewModel uses contentId.
+        string? id = null;
+        if (r.TryGetProperty("videoId", out var idEl)) id = idEl.GetString();
+        else if (r.TryGetProperty("contentId", out var contentId)) id = contentId.GetString();
+
+        if (string.IsNullOrEmpty(id)) return;
+        scanned.Add(id);
+
+        // Signal 1 — an explicit badge. Shapes vary a lot (metadataBadgeRenderer.style, badges[],
+        // thumbnailOverlay, badgeViewModel...), so match the marker anywhere in this one video's
+        // subtree rather than chasing each shape. Scoped to one entry, so it can't leak across videos.
+        var rawText = r.GetRawText();
+        var badged = rawText.Contains("MEMBERS_ONLY", StringComparison.Ordinal)
+                  || rawText.Contains("Members only", StringComparison.OrdinalIgnoreCase);
+
+        // Signal 2 — visible here but absent from the public uploads playlist. Catches members-only
+        // early access. Date/premiere guards are applied after enrichment, where real dates exist.
+        var missingFromPublic = useDiff && !publicIds.Contains(id);
+
+        if (!badged && !missingFromPublic) return;
+        if (!seen.Add(id)) return;
+
+        var title = id;
+        if (r.TryGetProperty("title", out var titleEl))
+            title = ReadText(titleEl) ?? id;
+
+        string? thumb = null;
+        if (r.TryGetProperty("thumbnail", out var thumbEl) &&
+            thumbEl.TryGetProperty("thumbnails", out var thumbs) &&
+            thumbs.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            var arr = thumbs.EnumerateArray().ToArray();
+            if (arr.Length > 0 && arr[^1].TryGetProperty("url", out var urlEl))
+                thumb = urlEl.GetString();
+        }
+        // lockupViewModel buries its image; the enrichment pass supplies the real one anyway.
+        thumb ??= $"https://i.ytimg.com/vi/{id}/mqdefault.jpg";
+
+        into.Add(new RawMemberVideo(id, title, thumb, ParseRelativeDate(r), badged));
+    }
+
+    // InnerTube text nodes are {"simpleText":...}, {"runs":[{"text":...}]}, or — on the newer
+    // viewModel renderers — {"content":...}.
+    private static string? ReadText(System.Text.Json.JsonElement el)
+    {
+        if (el.ValueKind == System.Text.Json.JsonValueKind.String) return el.GetString();
+        if (el.ValueKind != System.Text.Json.JsonValueKind.Object) return null;
+        if (el.TryGetProperty("simpleText", out var st)) return st.GetString();
+        if (el.TryGetProperty("content", out var c) && c.ValueKind == System.Text.Json.JsonValueKind.String)
+            return c.GetString();
+        if (el.TryGetProperty("runs", out var runs) && runs.ValueKind == System.Text.Json.JsonValueKind.Array)
+            return string.Concat(runs.EnumerateArray()
+                .Select(r => r.TryGetProperty("text", out var t) ? t.GetString() : null));
+        return null;
+    }
+
+    // Continuation tokens sit at different depths per route, so search rather than navigate.
+    private static string? FindContinuationToken(System.Text.Json.JsonElement el)
+    {
+        if (el.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            foreach (var child in el.EnumerateArray())
+            {
+                var t = FindContinuationToken(child);
+                if (t != null) return t;
+            }
+            return null;
+        }
+
+        if (el.ValueKind != System.Text.Json.JsonValueKind.Object) return null;
+
+        if (el.TryGetProperty("continuationCommand", out var cmd) &&
+            cmd.TryGetProperty("token", out var token))
+        {
+            var value = token.GetString();
+            if (!string.IsNullOrEmpty(value)) return value;
+        }
+
+        foreach (var prop in el.EnumerateObject())
+        {
+            var t = FindContinuationToken(prop.Value);
+            if (t != null) return t;
+        }
+        return null;
+    }
+
+    // Renderers carry only a relative age ("Streamed 3 weeks ago"), under videoInfo on playlist
+    // entries and publishedTimeText on channel/grid entries. Used purely as a fallback ordering
+    // key when videos.list didn't return the video.
+    private static DateTime ParseRelativeDate(System.Text.Json.JsonElement r)
+    {
+        try
+        {
+            foreach (var field in new[] { "publishedTimeText", "videoInfo" })
+            {
+                if (!r.TryGetProperty(field, out var el)) continue;
+                var parsed = ParseRelativeText(ReadText(el));
+                if (parsed != null) return parsed.Value;
+            }
+        }
+        catch { }
+        return DateTime.UtcNow;
+    }
+
+    private static DateTime? ParseRelativeText(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return null;
+
+        var m = System.Text.RegularExpressions.Regex.Match(
+            text, @"(\d+)\s+(second|minute|hour|day|week|month|year)s?\s+ago",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (!m.Success) return null;
+
+        var n = int.Parse(m.Groups[1].Value);
+        return m.Groups[2].Value.ToLowerInvariant() switch
+        {
+            "second" => DateTime.UtcNow.AddSeconds(-n),
+            "minute" => DateTime.UtcNow.AddMinutes(-n),
+            "hour" => DateTime.UtcNow.AddHours(-n),
+            "day" => DateTime.UtcNow.AddDays(-n),
+            "week" => DateTime.UtcNow.AddDays(-7 * n),
+            "month" => DateTime.UtcNow.AddMonths(-n),
+            _ => DateTime.UtcNow.AddYears(-n),
+        };
     }
 
     // Fetch unique subscribed channels via YouTube's InnerTube API using browser session cookies.
