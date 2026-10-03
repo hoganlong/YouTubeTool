@@ -426,6 +426,16 @@ public class DatabaseService(IDbContextFactory<AppDbContext> factory)
             .ExecuteUpdateAsync(s => s.SetProperty(c => c.LastFetchedAt, DateTime.UtcNow));
     }
 
+    public async Task UpdateChannelNameAsync(int channelId, string name, string? thumbnailUrl)
+    {
+        await using var db = await factory.CreateDbContextAsync();
+        await db.Channels
+            .Where(c => c.Id == channelId)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(c => c.Name, name)
+                .SetProperty(c => c.ThumbnailUrl, c => thumbnailUrl ?? c.ThumbnailUrl));
+    }
+
     public async Task UpdateChannelSortOrderAsync(int channelId, VideoSortOrder sortOrder)
     {
         await using var db = await factory.CreateDbContextAsync();

@@ -21,6 +21,7 @@ A WPF desktop app (.NET 10, Windows) for managing YouTube channel watchlists. Tr
   - **Show Member** — off by default; check to pull in members-only videos (see below)
 - **Mark All Watched** button to bulk-clear a list
 - Channel names are **bold** when they have unwatched videos, and wrap to multiple lines if long
+- Channel names stay current — if a channel is renamed on YouTube, the next Refresh picks up the new name (no extra quota)
 - Drag channels between lists, or drag lists themselves to reorder — status bar shows live progress during the move
 - Detects **YouTube Shorts** (≤3 min) — shows `(SHORT)` after title, portrait thumbnail
 - Members-only videos show `(MEMBERS)` after the title
@@ -176,7 +177,7 @@ YouTubeTool/
 ## YouTube API Quota Usage
 
 Each Refresh call costs:
-- **1 unit** — `channels.list` to get uploads playlist ID
+- **1 unit** — `channels.list` to get uploads playlist ID (plus the channel's current name and thumbnail, same call)
 - **1 unit per 50 videos** — `playlistItems.list` to get video list
 - **1 unit per 50 videos** — `videos.list` with `contentDetails` for duration (Shorts detection)
 
@@ -217,23 +218,29 @@ Two things follow from that:
 
 ### How it decides what's members-only
 
-The app reads the channel's **Videos, Shorts and Live** tabs and flags a video when either:
+The app reads the channel's **Videos, Shorts and Live** tabs. On each tab it first looks for YouTube's
+own **"Members only" filter** — the same one you'd click on the channel page. When that filter exists,
+the app just uses it, so the list is exactly what YouTube says is members-only. If a tab has no such
+filter, it has no members-only content.
 
-- it carries a **members-only badge** — YouTube shows this to people who *aren't* members, as a prompt
-  to join; or
-- it's **missing from the public uploads playlist** — which is how members-only early access looks on a
-  channel you *are* a member of, where no badge is shown at all.
+Some channels don't offer the filter. There the app falls back to flagging a video when either:
+
+- it carries a **members-only badge** — shown as "Members only" to people who aren't members, and as
+  **"Members first"** to members looking at an early-access upload; or
+- it's **missing from the public uploads playlist**, which is another way early access shows up.
 
 The second test ignores anything older than the oldest video the normal Refresh fetched (beyond that
 depth the two lists just cover different ranges), and ignores premieres and scheduled live streams.
+Neither test is applied to results that came from the filter — those are already definitive.
 
 **Costs:** 1 extra quota unit per 50 members-only videos (a `videos.list` call for real publish dates
 and durations).
 
 **If nothing comes back:** most likely the channel has no members-only videos right now — a preview may
 already have gone public, or the membership's perks may not include videos at all. Check
-`%TEMP%\YouTubeToolLogs\yt_members_summary.txt`, which records each tab scanned, how many videos were
-checked, and how many candidates were dropped and why.
+`%TEMP%\YouTubeToolLogs\yt_members_summary.txt`, which records each tab scanned, whether the
+"Members only" filter was found, how many videos were checked, and how many candidates were dropped
+and why.
 
 ---
 

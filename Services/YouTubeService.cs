@@ -6,6 +6,8 @@ using GoogleYT = Google.Apis.YouTube.v3;
 namespace YouTubeTool.Services;
 
 public record ChannelInfo(string YouTubeChannelId, string Name, string? ThumbnailUrl);
+// Channel's current title/thumbnail as of this fetch (null when the channel wasn't found), plus its uploads.
+public record ChannelUploads(string? Name, string? ThumbnailUrl, List<VideoInfo> Videos);
 public record VideoInfo(string YouTubeVideoId, string Title, string? ThumbnailUrl, DateTime PublishedAt, bool IsShort = false, bool IsMembersOnly = false);
 
 // Thrown when an InnerTube request comes back as logged-out — the session cookies are present
@@ -65,20 +67,24 @@ public class YouTubeService
             item.Snippet.Thumbnails?.Medium?.Url ?? item.Snippet.Thumbnails?.Default__?.Url);
     }
 
-    public async Task<List<VideoInfo>> FetchRecentVideosAsync(string ytChannelId, string apiKey, int maxResults = 50)
+    public async Task<ChannelUploads> FetchRecentVideosAsync(string ytChannelId, string apiKey, int maxResults = 50)
     {
         using var svc = BuildService(apiKey);
 
-        // Step 1: Get the uploads playlist ID (costs 1 quota unit)
-        var chanReq = svc.Channels.List("contentDetails");
+        // Step 1: Get the uploads playlist ID (costs 1 quota unit). Snippet rides along at no extra
+        // cost so a channel that has been renamed on YouTube picks up its new title on refresh —
+        // the name is otherwise only captured once, when the channel is added.
+        var chanReq = svc.Channels.List("contentDetails,snippet");
         chanReq.Id = ytChannelId;
         chanReq.MaxResults = 1;
         var chanResp = await chanReq.ExecuteAsync();
+        var chan = chanResp.Items?.FirstOrDefault();
+        var name = chan?.Snippet?.Title;
+        var channelThumb = chan?.Snippet?.Thumbnails?.Medium?.Url ?? chan?.Snippet?.Thumbnails?.Default__?.Url;
         // Channel not found or terminated — return empty rather than error
-        var uploadsPlaylistId = chanResp.Items?.FirstOrDefault()
-            ?.ContentDetails?.RelatedPlaylists?.Uploads;
+        var uploadsPlaylistId = chan?.ContentDetails?.RelatedPlaylists?.Uploads;
         if (string.IsNullOrEmpty(uploadsPlaylistId))
-            return [];
+            return new ChannelUploads(name, channelThumb, []);
 
         // Step 2: Fetch videos from playlist (costs 1 quota unit per page)
         var videos = new List<VideoInfo>();
@@ -123,11 +129,11 @@ public class YouTubeService
         // Step 3: Fetch durations to detect Shorts (≤60s). Costs 1 quota unit per 50 videos.
         var shortIds = await FetchShortVideoIdsAsync(svc, videos.Select(v => v.YouTubeVideoId));
 
-        return videos
+        return new ChannelUploads(name, channelThumb, videos
             .Select(v => shortIds.Contains(v.YouTubeVideoId)
                 ? v with { IsShort = true, ThumbnailUrl = $"https://i.ytimg.com/vi/{v.YouTubeVideoId}/oar2.jpg" }
                 : v)
-            .ToList();
+            .ToList());
     }
 
     private static async Task<HashSet<string>> FetchShortVideoIdsAsync(
@@ -173,8 +179,14 @@ public class YouTubeService
     //
     // TWO signals are needed, because the badge alone misses the case this feature exists for.
     //
-    //   1. An explicit badge (BADGE_MEMBERS_ONLY / "Members only") on the entry. Reliable, but
-    //      observed only on channels the viewer is NOT a member of — it's the join prompt.
+    //   1. An explicit badge (badgeStyle BADGE_MEMBERS_ONLY) on the entry. Fires for members and
+    //      non-members alike — but the badge *text* differs, so match the style, never the text.
+    //      A non-member sees "Members only" (the join prompt); a member sees "Members first" on
+    //      early-access uploads. Measured 2026-08-29 on Ambition Strikes, a channel this account
+    //      IS a member of: {"badgeText":"Members first","badgeStyle":"BADGE_MEMBERS_ONLY",
+    //      "iconName":"SPONSORSHIP_STAR"}. An earlier note here claimed the badge only ever
+    //      appeared to non-members; that was wrong, and tightening the match to the literal string
+    //      "Members only" would silently drop exactly the early-access case below.
     //   2. Present in the authenticated tab but ABSENT from the public uploads playlist. This is
     //      what catches members-only *early access*: the creator posts a video to members first and
     //      releases it publicly a day or so later. During that window it is visible to a member and
@@ -288,9 +300,9 @@ public class YouTubeService
         {
             details.TryGetValue(v.Id, out var d);
 
-            // A badge is proof on its own. A diff hit is only meaningful inside the window the
-            // public fetch actually covered, and only for something already published.
-            if (!v.Badged)
+            // A badge or a chip hit is proof on its own. A diff hit is only meaningful inside the
+            // window the public fetch actually covered, and only for something already published.
+            if (!v.Confirmed)
             {
                 var published = d?.Published ?? v.ApproxPublished;
                 if (oldestPublicDate.HasValue && published < oldestPublicDate.Value)
@@ -317,16 +329,29 @@ public class YouTubeService
         }
 
         LogMemberAttempt(logDir, ytChannelId, "result", 0,
-            $"{result.Count} kept ({result.Count(r => trimmed.First(t => t.Id == r.YouTubeVideoId).Badged)} badged), " +
+            $"{result.Count} kept ({result.Count(r => trimmed.First(t => t.Id == r.YouTubeVideoId).Confirmed)} confirmed), " +
             $"dropped {droppedOld} older than public fetch, {droppedUpcoming} upcoming/live");
         return result;
     }
 
     private sealed record VideoDetails(string Title, string? Thumb, DateTime Published, bool IsShort, string LiveState);
 
-    // Badged = carried an explicit members-only badge (proof on its own). Otherwise it was found by
-    // absence from the public uploads set, which only holds inside the fetched date window.
-    private record RawMemberVideo(string Id, string Title, string? ThumbnailUrl, DateTime ApproxPublished, bool Badged);
+    // Confirmed = proven members-only on its own, either by an explicit badge or by having come back
+    // from the "Members only" chip. Otherwise it was found by absence from the public uploads set,
+    // which only holds inside the fetched date window and still has to clear the guards below.
+    private record RawMemberVideo(string Id, string Title, string? ThumbnailUrl, DateTime ApproxPublished, bool Confirmed);
+
+    // Per-tab scan state. TakeAll is the chip path: everything the "Members only" chip returns is
+    // members-only by construction, so no per-entry badge or diff test applies.
+    private sealed class MemberScan(HashSet<string> publicIds, bool useDiff, bool takeAll)
+    {
+        public List<RawMemberVideo> Found { get; } = [];
+        public HashSet<string> Seen { get; } = new(StringComparer.Ordinal);
+        public HashSet<string> Scanned { get; } = new(StringComparer.Ordinal);
+        public HashSet<string> PublicIds { get; } = publicIds;
+        public bool UseDiff { get; } = useDiff;
+        public bool TakeAll { get; } = takeAll;
+    }
 
     private static async Task<Dictionary<string, VideoDetails>> FetchVideoDetailsAsync(
         GoogleYT.YouTubeService svc, IEnumerable<string> videoIds)
@@ -365,8 +390,12 @@ public class YouTubeService
         return result;
     }
 
-    // Walks one channel tab, following continuations, collecting badged members-only entries.
+    // Walks one channel tab, following continuations, collecting members-only entries.
     // Returns empty rather than throwing when that tab has none (or doesn't exist).
+    //
+    // Page 0 is checked for a "Members only" filter chip first. When the channel has one, that chip
+    // is an exact server-side list and we switch to it, skipping the badge/diff heuristic entirely.
+    // The walk below is the fallback for channels that don't offer the chip.
     private static async Task<List<RawMemberVideo>> RunMemberStrategyAsync(
         System.Net.Http.HttpClient http,
         string context,
@@ -379,18 +408,16 @@ public class YouTubeService
         int maxVideos,
         IProgress<string>? progress)
     {
-        var found = new List<RawMemberVideo>();
-        var seen = new HashSet<string>(StringComparer.Ordinal);
         // Paging is driven by how many videos we've *scanned*, not how many members-only ones we
         // found: a page of entirely public videos is normal and must not stop the walk. Scanning to
         // maxVideos keeps this pass the same depth as the regular uploads fetch.
-        var scanned = new HashSet<string>(StringComparer.Ordinal);
+        var scan = new MemberScan(publicIds, useDiff, takeAll: false);
         string? continuation = null;
         int page = 0;
 
-        while (scanned.Count < maxVideos && page < 20)
+        while (scan.Scanned.Count < maxVideos && page < 20)
         {
-            progress?.Report($"Scanning {tabName} for members-only... ({scanned.Count} checked, {found.Count} found)");
+            progress?.Report($"Scanning {tabName} for members-only... ({scan.Scanned.Count} checked, {scan.Found.Count} found)");
 
             var bodyJson = continuation == null
                 ? initialBody
@@ -427,20 +454,122 @@ public class YouTubeService
                 return [];
             }
 
-            var scannedBefore = scanned.Count;
-            CollectVideos(doc.RootElement, found, seen, scanned, publicIds, useDiff);
-            var newlyScanned = scanned.Count - scannedBefore;
+            // Prefer the exact list when the channel offers one. Absence of the chip is itself
+            // meaningful: it means this tab has no members-only content at all.
+            if (page == 0)
+            {
+                var chipToken = FindMembersOnlyChipToken(doc.RootElement);
+                if (chipToken != null)
+                {
+                    LogMemberAttempt(logDir, ytChannelId, tabName, page,
+                        "found 'Members only' chip — using exact list instead of badge/diff walk");
+                    return await RunMembersChipAsync(
+                        http, context, logDir, ytChannelId, tabName, chipToken, maxVideos, progress);
+                }
+            }
+
+            var scannedBefore = scan.Scanned.Count;
+            CollectVideos(doc.RootElement, scan);
+            var newlyScanned = scan.Scanned.Count - scannedBefore;
 
             continuation = FindContinuationToken(doc.RootElement);
             LogMemberAttempt(logDir, ytChannelId, tabName, page,
-                $"scanned {newlyScanned} video(s), {found.Count} candidate(s) so far, " +
+                $"scanned {newlyScanned} video(s), {scan.Found.Count} candidate(s) so far, " +
                 $"continuation={(continuation != null ? "yes" : "no")}");
 
             page++;
             if (continuation == null || newlyScanned == 0) break;
         }
 
-        return found;
+        return scan.Found;
+    }
+
+    // Pages the "Members only" chip. Every entry it returns is members-only by construction, so
+    // there is no per-entry test and no date floor — the server has already filtered.
+    private static async Task<List<RawMemberVideo>> RunMembersChipAsync(
+        System.Net.Http.HttpClient http,
+        string context,
+        string logDir,
+        string ytChannelId,
+        string tabName,
+        string chipToken,
+        int maxVideos,
+        IProgress<string>? progress)
+    {
+        var scan = new MemberScan([], useDiff: false, takeAll: true);
+        string? continuation = chipToken;
+        int page = 0;
+
+        while (scan.Found.Count < maxVideos && page < 20 && continuation != null)
+        {
+            progress?.Report($"Reading members-only {tabName}... ({scan.Found.Count} found)");
+
+            var bodyJson = $$"""{"continuation":"{{continuation}}","context":{{context}}}""";
+            using var httpContent = new System.Net.Http.StringContent(
+                bodyJson, System.Text.Encoding.UTF8, "application/json");
+            var resp = await http.PostAsync("https://www.youtube.com/youtubei/v1/browse", httpContent);
+            var json = await resp.Content.ReadAsStringAsync();
+
+            if (page == 0)
+                try { File.WriteAllText(Path.Combine(logDir, $"yt_members_{ytChannelId}_{tabName}_chip.json"), json); } catch { }
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                LogMemberAttempt(logDir, ytChannelId, $"{tabName}/chip", page, $"HTTP {(int)resp.StatusCode}");
+                break;
+            }
+
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+
+            var foundBefore = scan.Found.Count;
+            CollectVideos(doc.RootElement, scan);
+            var newlyFound = scan.Found.Count - foundBefore;
+
+            continuation = FindContinuationToken(doc.RootElement);
+            LogMemberAttempt(logDir, ytChannelId, $"{tabName}/chip", page,
+                $"{newlyFound} members-only video(s), {scan.Found.Count} total, " +
+                $"continuation={(continuation != null ? "yes" : "no")}");
+
+            page++;
+            if (newlyFound == 0) break;
+        }
+
+        return scan.Found;
+    }
+
+    // The chip bar sits in the tab header with chips like Latest / Members only / Public. The
+    // "Members only" chip carries an ordinary browse continuation token that returns just that
+    // channel's members-only videos for the tab — no badge sniffing, no diff, no date floor.
+    // Channels with no members-only content in a tab simply don't render the chip.
+    private static string? FindMembersOnlyChipToken(System.Text.Json.JsonElement el)
+    {
+        if (el.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            foreach (var child in el.EnumerateArray())
+            {
+                var t = FindMembersOnlyChipToken(child);
+                if (t != null) return t;
+            }
+            return null;
+        }
+
+        if (el.ValueKind != System.Text.Json.JsonValueKind.Object) return null;
+
+        if (el.TryGetProperty("chipViewModel", out var chip) &&
+            chip.TryGetProperty("text", out var text) &&
+            string.Equals(ReadText(text), "Members only", StringComparison.OrdinalIgnoreCase))
+        {
+            // Search inside this one chip only, so we can't pick up a neighbouring chip's token.
+            var token = FindContinuationToken(chip, skipChipBars: false);
+            if (token != null) return token;
+        }
+
+        foreach (var prop in el.EnumerateObject())
+        {
+            var t = FindMembersOnlyChipToken(prop.Value);
+            if (t != null) return t;
+        }
+        return null;
     }
 
     private static void LogMemberAttempt(string logDir, string ytChannelId, string strategy, int page, string outcome)
@@ -473,69 +602,88 @@ public class YouTubeService
     // lockupViewModel depending on how far YouTube's rollout has reached, and the surrounding
     // wrappers change too. Walking the whole response for anything video-shaped is far more durable
     // than hard-coding paths, and costs nothing at these response sizes.
-    private static void CollectVideos(
-        System.Text.Json.JsonElement el,
-        List<RawMemberVideo> into,
-        HashSet<string> seen,
-        HashSet<string> scanned,
-        HashSet<string> publicIds,
-        bool useDiff)
+    private static void CollectVideos(System.Text.Json.JsonElement el, MemberScan scan)
     {
-        if (scanned.Count >= 2000) return; // safety valve against a pathological response
+        if (scan.Scanned.Count >= 2000) return; // safety valve against a pathological response
 
         if (el.ValueKind == System.Text.Json.JsonValueKind.Array)
         {
             foreach (var child in el.EnumerateArray())
-                CollectVideos(child, into, seen, scanned, publicIds, useDiff);
+                CollectVideos(child, scan);
             return;
         }
 
         if (el.ValueKind != System.Text.Json.JsonValueKind.Object) return;
 
-        foreach (var name in new[] { "playlistVideoRenderer", "videoRenderer", "gridVideoRenderer", "lockupViewModel" })
+        // shortsLockupViewModel is what a channel's Shorts tab actually uses. Leaving it out meant
+        // every Shorts page scanned zero entries and the request was pure waste — which hid 13
+        // members-only Shorts on one test channel. Don't drop it back out of this list.
+        foreach (var name in new[] { "playlistVideoRenderer", "videoRenderer", "gridVideoRenderer", "lockupViewModel", "shortsLockupViewModel" })
         {
             if (!el.TryGetProperty(name, out var renderer)) continue;
-            TryAddVideo(renderer, into, seen, scanned, publicIds, useDiff);
+            TryAddVideo(renderer, scan);
             return; // a video renderer holds no nested videos
         }
 
         foreach (var prop in el.EnumerateObject())
-            CollectVideos(prop.Value, into, seen, scanned, publicIds, useDiff);
+            CollectVideos(prop.Value, scan);
     }
 
-    private static void TryAddVideo(
-        System.Text.Json.JsonElement r,
-        List<RawMemberVideo> into,
-        HashSet<string> seen,
-        HashSet<string> scanned,
-        HashSet<string> publicIds,
-        bool useDiff)
+    // Each renderer family names the video differently: videoRenderer uses videoId, lockupViewModel
+    // uses contentId, and shortsLockupViewModel carries it on its reel endpoint (with entityId,
+    // "shorts-shelf-item-<id>", as a backstop).
+    private static string? TryGetVideoId(System.Text.Json.JsonElement r)
     {
-        // videoRenderer family uses videoId; lockupViewModel uses contentId.
-        string? id = null;
-        if (r.TryGetProperty("videoId", out var idEl)) id = idEl.GetString();
-        else if (r.TryGetProperty("contentId", out var contentId)) id = contentId.GetString();
+        if (r.TryGetProperty("videoId", out var idEl)) return idEl.GetString();
+        if (r.TryGetProperty("contentId", out var contentId)) return contentId.GetString();
 
+        if (r.TryGetProperty("onTap", out var onTap) &&
+            onTap.TryGetProperty("innertubeCommand", out var itc) &&
+            itc.TryGetProperty("reelWatchEndpoint", out var reel) &&
+            reel.TryGetProperty("videoId", out var reelId))
+            return reelId.GetString();
+
+        if (r.TryGetProperty("entityId", out var entity))
+        {
+            var raw = entity.GetString();
+            var dash = raw?.LastIndexOf('-') ?? -1;
+            if (raw != null && dash >= 0 && dash + 1 < raw.Length) return raw[(dash + 1)..];
+        }
+
+        return null;
+    }
+
+    private static void TryAddVideo(System.Text.Json.JsonElement r, MemberScan scan)
+    {
+        var id = TryGetVideoId(r);
         if (string.IsNullOrEmpty(id)) return;
-        scanned.Add(id);
+        scan.Scanned.Add(id);
 
         // Signal 1 — an explicit badge. Shapes vary a lot (metadataBadgeRenderer.style, badges[],
         // thumbnailOverlay, badgeViewModel...), so match the marker anywhere in this one video's
         // subtree rather than chasing each shape. Scoped to one entry, so it can't leak across videos.
+        //
+        // The MEMBERS_ONLY test is the load-bearing one: it matches badgeStyle, which is stable.
+        // The "Members only" test only catches the non-member join prompt — a member sees the text
+        // "Members first" instead. Don't drop the style test in favour of the friendlier string.
         var rawText = r.GetRawText();
         var badged = rawText.Contains("MEMBERS_ONLY", StringComparison.Ordinal)
                   || rawText.Contains("Members only", StringComparison.OrdinalIgnoreCase);
 
         // Signal 2 — visible here but absent from the public uploads playlist. Catches members-only
         // early access. Date/premiere guards are applied after enrichment, where real dates exist.
-        var missingFromPublic = useDiff && !publicIds.Contains(id);
+        var missingFromPublic = scan.UseDiff && !scan.PublicIds.Contains(id);
 
-        if (!badged && !missingFromPublic) return;
-        if (!seen.Add(id)) return;
+        if (!scan.TakeAll && !badged && !missingFromPublic) return;
+        if (!scan.Seen.Add(id)) return;
 
         var title = id;
         if (r.TryGetProperty("title", out var titleEl))
             title = ReadText(titleEl) ?? id;
+        // Shorts entries have no title node — theirs lives under overlayMetadata.
+        else if (r.TryGetProperty("overlayMetadata", out var overlay) &&
+                 overlay.TryGetProperty("primaryText", out var primary))
+            title = ReadText(primary) ?? id;
 
         string? thumb = null;
         if (r.TryGetProperty("thumbnail", out var thumbEl) &&
@@ -549,7 +697,7 @@ public class YouTubeService
         // lockupViewModel buries its image; the enrichment pass supplies the real one anyway.
         thumb ??= $"https://i.ytimg.com/vi/{id}/mqdefault.jpg";
 
-        into.Add(new RawMemberVideo(id, title, thumb, ParseRelativeDate(r), badged));
+        scan.Found.Add(new RawMemberVideo(id, title, thumb, ParseRelativeDate(r), scan.TakeAll || badged));
     }
 
     // InnerTube text nodes are {"simpleText":...}, {"runs":[{"text":...}]}, or — on the newer
@@ -568,13 +716,19 @@ public class YouTubeService
     }
 
     // Continuation tokens sit at different depths per route, so search rather than navigate.
-    private static string? FindContinuationToken(System.Text.Json.JsonElement el)
+    //
+    // Chip subtrees are skipped by default and that is load-bearing. Every chip in the bar
+    // (Latest / Members only / Public, plus the sort sheet inside each) carries its own
+    // continuationCommand, and in a chip response the chip bar is the FIRST continuationItem —
+    // ahead of the grid. Taking the first token found would page straight back into the
+    // unfiltered list. A chip is never a legitimate "next page".
+    private static string? FindContinuationToken(System.Text.Json.JsonElement el, bool skipChipBars = true)
     {
         if (el.ValueKind == System.Text.Json.JsonValueKind.Array)
         {
             foreach (var child in el.EnumerateArray())
             {
-                var t = FindContinuationToken(child);
+                var t = FindContinuationToken(child, skipChipBars);
                 if (t != null) return t;
             }
             return null;
@@ -591,7 +745,8 @@ public class YouTubeService
 
         foreach (var prop in el.EnumerateObject())
         {
-            var t = FindContinuationToken(prop.Value);
+            if (skipChipBars && (prop.NameEquals("chipBarViewModel") || prop.NameEquals("chipViewModel"))) continue;
+            var t = FindContinuationToken(prop.Value, skipChipBars);
             if (t != null) return t;
         }
         return null;

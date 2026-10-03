@@ -29,9 +29,11 @@ public class ChannelItem : BaseViewModel
     private bool _showShorts;
     private bool _showWatched;
     private bool _showMembersOnly;
+    private string _name;
 
     public int Id { get; }
-    public string Name { get; }
+    // Settable so a refresh can pick up a channel renamed on YouTube without reloading the pane.
+    public string Name { get => _name; set { if (SetProperty(ref _name, value)) OnPropertyChanged(nameof(DisplayName)); } }
     public string YouTubeChannelId { get; }
     public VideoSortOrder SortOrder { get; set; }
     public int UnwatchedCount { get => _unwatchedCount; set => SetProperty(ref _unwatchedCount, value); }
@@ -58,7 +60,7 @@ public class ChannelItem : BaseViewModel
     public ChannelItem(Channel channel, DatabaseService db, Func<ChannelItem, Task> onOptionsChanged)
     {
         Id = channel.Id;
-        Name = channel.Name;
+        _name = channel.Name;
         YouTubeChannelId = channel.YouTubeChannelId;
         SortOrder = channel.VideoSortOrder;
         _showShorts = channel.ShowShorts;
@@ -551,9 +553,11 @@ public class MainViewModel : BaseViewModel
             List<VideoInfo> publicVideos = [];
             try
             {
-                publicVideos = await _yt.FetchRecentVideosAsync(channel.YouTubeChannelId, apiKey, maxVideos);
+                var uploads = await _yt.FetchRecentVideosAsync(channel.YouTubeChannelId, apiKey, maxVideos);
+                publicVideos = uploads.Videos;
                 await _db.UpsertVideosAsync(channel.Id, publicVideos);
                 await _db.UpdateChannelLastFetchedAsync(channel.Id);
+                await ApplyChannelRenameAsync(channel, uploads.Name, uploads.ThumbnailUrl);
             }
             catch (Exception ex)
             {
@@ -600,6 +604,20 @@ public class MainViewModel : BaseViewModel
         }
 
         return memberVideos;
+    }
+
+    // Channels get renamed on YouTube (the @handle usually stays the same); the stored name was
+    // otherwise frozen at whatever it was when the channel was added.
+    private async Task ApplyChannelRenameAsync(Channel channel, string? newName, string? thumbnailUrl)
+    {
+        if (string.IsNullOrWhiteSpace(newName) || newName == channel.Name) return;
+
+        StatusMessage = $"Channel renamed on YouTube: {channel.Name} → {newName}";
+        await _db.UpdateChannelNameAsync(channel.Id, newName, thumbnailUrl);
+        channel.Name = newName;
+
+        var item = Channels.FirstOrDefault(c => c.Id == channel.Id);
+        if (item != null) item.Name = newName;
     }
 
     private async Task<int> FetchMemberVideosAsync(
