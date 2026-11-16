@@ -121,7 +121,9 @@ YouTubeTool/
 │   ├── DatabaseService.cs      # All DB read/write operations
 │   ├── SettingsService.cs      # Loads/saves settings.json
 │   ├── GoogleAuthService.cs    # OAuth sign-in via GoogleWebAuthorizationBroker
-│   └── TakeoutImportService.cs # Parses watch-history.json from Google Takeout
+│   ├── TakeoutImportService.cs # Parses watch-history.json from Google Takeout
+│   ├── WebView2CookieService.cs # YouTube browser session (hidden WebView2) for InnerTube calls
+│   └── ChromeCookieService.cs  # Legacy browser-cookie reader (no longer used as a fallback)
 │
 ├── ViewModels/
 │   ├── MainViewModel.cs        # Main window: lists, channels, videos, all commands
@@ -133,7 +135,9 @@ YouTubeTool/
 ├── Views/
 │   ├── SettingsWindow.xaml     # API key + OAuth settings dialog
 │   ├── InputDialog.xaml        # Generic text-input dialog (used for Add List)
-│   └── ErrorDialog.xaml        # Custom error dialog (Copy + Exit buttons)
+│   ├── ErrorDialog.xaml        # Custom error dialog (Copy + Exit buttons)
+│   ├── YouTubeLoginWindow.xaml # WebView2 YouTube sign-in (brand-account switching)
+│   └── MessageHistoryWindow.xaml # Scrollable status-message log
 │
 ├── Converters/
 │   └── TestResultColorConverter.cs  # Also contains BoolToVisibilityConverter,
@@ -271,6 +275,9 @@ Sync Watch History pulls your history via YouTube's InnerTube API using your **b
 **If your session expires:** YouTube returns a logged-out feed (HTTP 200 but `responseContext.loggedOut = true`, with the "Keep track of what you watch" empty state). The cookies are still present on disk, so the app can't tell from their presence alone. The app now detects the logged-out response, automatically prompts you to sign in again, and retries — so a stale session no longer silently reports "no history." You can also re-auth manually any time via **Settings → Switch Account**.
 
 Raw InnerTube responses are saved to `%TEMP%\YouTubeToolLogs\yt_history_p*.json` (and cookie names to `yt_history_cookies.txt`) for debugging.
+
+### Taskbar button on the wrong monitor (fixed in v1.9.2)
+On dual-monitor systems the taskbar button could intermittently appear on the other monitor's taskbar. The cause was the hidden browser window used for YouTube session work being parked off-screen, where Windows assigned it to the "nearest" monitor. It now sits on the main window's own monitor, owned by the main window, and never takes focus.
 
 ### OAuth "Access blocked" error
 If you see "YouTubeTool has not completed the Google verification process":

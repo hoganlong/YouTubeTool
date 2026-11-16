@@ -1,5 +1,7 @@
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Interop;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
 
@@ -126,21 +128,63 @@ public class WebView2CookieService
         catch { }
     }
 
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO info);
+
+    [DllImport("user32.dll")]
+    private static extern bool ClientToScreen(IntPtr hWnd, ref POINT point);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT { public int X, Y; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT { public int Left, Top, Right, Bottom; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MONITORINFO { public int cbSize; public RECT rcMonitor, rcWork; public int dwFlags; }
+
+    private const uint MONITOR_DEFAULTTONEAREST = 2;
+    private const uint SWP_NOSIZE = 0x0001, SWP_NOZORDER = 0x0004, SWP_NOACTIVATE = 0x0010;
+
     // Helper: creates a hidden WebView2 window, runs an action, then closes it.
+    //
+    // The host window used to be parked unowned at (-9999,-9999) and shown with activation.
+    // The taskbar places an app's button by the monitor its windows are on, and an off-screen
+    // window resolves to whichever monitor is "nearest" — so the main window's taskbar button
+    // would intermittently jump to the other monitor. Now the host is owned by the main window,
+    // never activates, and sits at the main window's top-left content pixel (same monitor).
     private static async Task WithWebViewAsync(Func<WebView2, Task> action)
     {
         var tcs = new TaskCompletionSource();
 
         await Application.Current.Dispatcher.InvokeAsync(async () =>
         {
+            var owner = Application.Current.MainWindow;
             var win = new Window
             {
                 Width = 1, Height = 1,
                 WindowStyle = WindowStyle.None,
                 ShowInTaskbar = false,
-                Left = -9999, Top = -9999,
+                ShowActivated = false,
                 ResizeMode = ResizeMode.NoResize
             };
+
+            // A minimized owner hides its owned windows, and WebView2 may not load in a hidden
+            // one — so only take ownership while the main window is actually on screen.
+            bool ownerOnScreen = owner is { IsVisible: true } && owner.WindowState != WindowState.Minimized;
+            if (ownerOnScreen) win.Owner = owner;
+
+            // Create the HWND without showing it, move it, then show — so it never appears
+            // anywhere else first. Positioned in physical pixels to sidestep per-monitor DPI.
+            var hwnd = new WindowInteropHelper(win).EnsureHandle();
+            if (owner != null && TryGetHostPosition(owner, ownerOnScreen, out var x, out var y))
+                SetWindowPos(hwnd, IntPtr.Zero, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
 
             var webView = new WebView2();
             win.Content = webView;
@@ -165,5 +209,29 @@ public class WebView2CookieService
         });
 
         await tcs.Task;
+    }
+
+    // Where the hidden host goes, in physical screen pixels. On screen: the main window's
+    // top-left *content* pixel — not Left/Top (those are restore bounds when maximized) and not
+    // the outer frame (a maximized frame overhangs the screen edge, possibly onto the other
+    // monitor). Minimized: the top-left of the monitor the main window will restore onto.
+    private static bool TryGetHostPosition(Window owner, bool ownerOnScreen, out int x, out int y)
+    {
+        x = y = 0;
+        var ownerHwnd = new WindowInteropHelper(owner).Handle;
+        if (ownerHwnd == IntPtr.Zero) return false;
+
+        if (ownerOnScreen)
+        {
+            var pt = new POINT();
+            if (!ClientToScreen(ownerHwnd, ref pt)) return false;
+            (x, y) = (pt.X, pt.Y);
+            return true;
+        }
+
+        var info = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
+        if (!GetMonitorInfo(MonitorFromWindow(ownerHwnd, MONITOR_DEFAULTTONEAREST), ref info)) return false;
+        (x, y) = (info.rcWork.Left, info.rcWork.Top);
+        return true;
     }
 }
